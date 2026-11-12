@@ -1,0 +1,6 @@
+{
+  "githubRepo": "ALEPH-ad/fan_dian",
+  "vapidPublicKey": "BC9D6xT_zCkI6LyCs66JsrzqYeiax7dsgQfVUFkK1Q_VOWD0SRcFuSPwT67Ici_BrJjHJFYOGdD8-94Iu_a0asI",
+  "branch": "main",
+  "scheduleHint": "GitHub Actions 每 5 分钟检查一次（可延后几分钟），到点后 20 分钟内都会补发。"
+}
