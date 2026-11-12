@@ -1,539 +1,398 @@
-// 说明：wire.js 已通过 <script> 先加载，它也把同名函数挂到了 window 上。
-// 两个文件都是全局脚本，所以这里不能再声明 createWire，否则会冲突。
+// 铁线饭点 · 单文件版（不依赖任何外部脚本，复制粘贴就能用）
+// 仓库名写死在这里，配置文件读不到也不影响使用
 (function () {
-  if (typeof window.createWire !== 'function') {
-    window.createWire = function (host) { host.innerHTML = ''; };
+  'use strict';
+
+  var REPO = 'ALEPH-ad/fan_dian';
+  var API = 'https://api.github.com/repos/' + REPO + '/contents/data.json';
+  var VAPID_FALLBACK = 'BC9D6xT_zCkI6LyCs66JsrzqYeiax7dsgQfVUFkK1Q_VOWD0SRcFuSPwT67Ici_BrJjHJFYOGdD8-94Iu_a0asI';
+  var state = { data: null, sha: null, token: '', busy: false, lastError: '' };
+
+  /* ---------------- 小工具 ---------------- */
+  function $(id) { return document.getElementById(id); }
+  function setText(id, t) { var e = $(id); if (e) e.textContent = t; }
+  function showEl(id, on) { var e = $(id); if (e) e.classList[on ? 'remove' : 'add']('hide'); }
+  function on(id, type, fn) { var e = $(id); if (e) e.addEventListener(type, fn); }
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function toast(msg, icon) {
+    var t = $('toast');
+    if (!t) { console.log('[toast]', msg); return; }
+    setText('toastIcon', icon || '🍚');
+    setText('toastText', msg);
+    t.classList.add('show');
+    clearTimeout(toast.t);
+    toast.t = setTimeout(function () { t.classList.remove('show'); }, 2600);
   }
-})();
-// 仓库名以 config.json 为准（window.__FD_REPO__ 只是兜底）
-let repoPath = (window.__FD_REPO__ || '').replace(/^\/+|\/+$/g, '');
-const DATA_PATH = 'data.json';
-let API = repoPath ? `https://api.github.com/repos/${repoPath}/contents/${DATA_PATH}` : '';
-
-const DEFAULTS = {
-  subs: [],
-  prefs: { enabled: true, window: 60, times: ['07:30', '11:45', '17:45'], days: [0, 1, 2, 3, 4, 5, 6], theme: 'terracotta', nameBad: true },
-  fired: {}
-};
-
-// 兼容老版本浏览器（structuredClone 在旧版里没有）
-const clone = (obj) => JSON.parse(JSON.stringify(obj));
-
-const state = {
-  data: clone(DEFAULTS),
-  sha: null,
-  token: '',
-  unlocked: false,
-  busy: false
-};
-
-/* ---------------- 工具 ---------------- */
-const $ = id => document.getElementById(id);
-function withTimeout(p, ms) {
-  return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('等待超时')), ms))]);
-}
-function b64uToBytes(b64u) {
-  return Uint8Array.from(atob(b64u.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
-}
-function bytesToB64u(buf) {
-  return btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-function randomId() { return bytesToB64u(crypto.getRandomValues(new Uint8Array(9))); }
-function pad(n) { return String(n).padStart(2, '0'); }
-function todayKey() {
-  const d = new Date();
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-function fmt(ts) {
-  const d = new Date(ts);
-  return `${d.getMonth() + 1}月${d.getDate()}日 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-function toast(text, icon = '🍚') {
-  const t = $('toast');
-  $('toastIcon').textContent = icon;
-  $('toastText').textContent = text;
-  t.classList.add('show');
-  clearTimeout(toast._t);
-  toast._t = setTimeout(() => t.classList.remove('show'), 2400);
-}
-function isStandalone() {
-  return matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
-}
-function isSecure() {
-  return location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-}
-function isIOS() {
-  return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-}
-
-/* ---------------- 云同步（GitHub） ---------------- */
-function ghHeaders() {
-  const h = { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'Content-Type': 'application/json' };
-  if (state.token) h.Authorization = `Bearer ${state.token}`;
-  return h;
-}
-async function loadConfig() {
-  if (repoPath) return null;
-  try {
-    const cfg = await fetch('config.json', { cache: 'no-store' }).then(r => r.json());
-    repoPath = String(cfg.githubRepo || '').replace(/^\/+|\/+$/g, '');
-    if (repoPath) API = `https://api.github.com/repos/${repoPath}/contents/${DATA_PATH}`;
-    return cfg;
-  } catch (e) {
-    return null;
+  function b64uToBytes(s) {
+    var t = s.replace(/-/g, '+').replace(/_/g, '/');
+    while (t.length % 4) t += '=';
+    return Uint8Array.from(atob(t), function (c) { return c.charCodeAt(0); });
   }
-}
-async function readRemote() {
-  await loadConfig();
-  if (!API) { renderAll(); return; }
-  const r = await fetch(`${API}?t=${Date.now()}`, { headers: ghHeaders(), cache: 'no-store' });
-  if (r.status === 404) { state.data = clone(DEFAULTS); state.sha = null; renderAll(); return; }
-  if (!r.ok) throw new Error(`读取 data.json 失败（${r.status}）`);
-  const j = await r.json();
-  let data;
-  try { data = JSON.parse(decodeURIComponent(escape(atob(j.content.replace(/\s/g, ''))))); } catch { data = clone(DEFAULTS); }
-  data.subs = data.subs || [];
-  data.prefs = Object.assign(clone(DEFAULTS.prefs), data.prefs || {});
-  data.fired = data.fired || {};
-  state.data = data;
-  state.sha = j.sha;
-  renderAll();
-}
-async function writeRemote(message = '更新订阅/设置') {
-  await loadConfig();
-  if (!API) throw new Error('还没配置仓库路径（config.json 里的 githubRepo）');
-  if (!state.token) throw new Error('需要 GitHub Token 才能写入（点「连接仓库」）');
-  if (state.busy) throw new Error('正在同步，请稍等');
-  state.busy = true;
-  try {
-    // 重新取一次 sha，减少冲突
-    try { await readRemote(); } catch {}
-    const body = {
-      message: `fan-dian: ${message}`,
-      content: btoa(unescape(encodeURIComponent(JSON.stringify(state.data, null, 2)))),
-      branch: 'main'
+  function randomId() {
+    var a = new Uint8Array(9); crypto.getRandomValues(a);
+    return btoa(String.fromCharCode.apply(null, a)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  function todayKey() { var d = new Date(); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+  function isIOS() { return /iPad|iPhone|iPod/.test(navigator.userAgent); }
+  function isStandalone() { return (matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true; }
+
+  /* ---------------- 默认数据 ---------------- */
+  function defaults() {
+    return {
+      subs: [],
+      prefs: { enabled: true, window: 60, times: ['07:30', '11:45', '17:45'], days: [0, 1, 2, 3, 4, 5, 6], theme: 'terracotta', nameBad: true },
+      fired: {}
     };
-    if (state.sha) body.sha = state.sha;
-    const r = await fetch(API, { method: 'PUT', headers: ghHeaders(), body: JSON.stringify(body) });
-    if (!r.ok) {
-      const j = await r.json().catch(() => ({}));
-      const hint = r.status === 401 ? '令牌无效或已过期' : r.status === 403 ? '令牌没有 repo 权限，或权限不足' : r.status === 409 ? '文件刚被别人改过，请再点一次' : '';
-      throw new Error(`写入失败（${r.status}${hint ? '：' + hint : ''}${j.message ? ' · ' + j.message : ''}）`);
-    }
-    const j = await r.json();
-    state.sha = j.content && j.content.sha;
-    state.unlocked = true;
-    localStorage.setItem('fd_push_token', state.token);
-    renderSync();
-  } finally {
-    state.busy = false;
   }
-}
+  function normalize(d) {
+    var o = clone(defaults());
+    d = d || {};
+    o.subs = Array.isArray(d.subs) ? d.subs : [];
+    o.prefs = Object.assign(o.prefs, d.prefs || {});
+    o.fired = d.fired || {};
+    return o;
+  }
+  function data() { if (!state.data) state.data = defaults(); return state.data; }
 
-/* ---------------- 订阅 ---------------- */
-async function currentSubscription() {
-  if (!('serviceWorker' in navigator)) return null;
-  const reg = await navigator.serviceWorker.ready;
-  return reg.pushManager.getSubscription();
-}
-function mySub() {
-  const mine = localStorage.getItem('fd_push_sub');
-  if (!mine) return null;
-  return state.data.subs.find(s => s.id === mine) || null;
-}
-/* 最近一次订阅错误，界面上可以原样显示出来，方便排查 */
-let lastSubError = '';
-
-async function enablePush() {
-  if (!isSecure()) { toast('请用 https 地址打开，file:// 无法收推送', '⚠️'); return; }
-  const cfg = (await loadConfig()) || { githubRepo: repoPath };
-  let vapid = cfg.vapidPublicKey;
-  if (!vapid) {
-    const again = await fetch('config.json', { cache: 'no-store' }).then(r => r.json()).catch(() => ({}));
-    vapid = again.vapidPublicKey;
+  /* ---------------- 和 GitHub 同步 ---------------- */
+  function headers() {
+    var h = { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'Content-Type': 'application/json' };
+    if (state.token) h.Authorization = 'Bearer ' + state.token;
+    return h;
   }
-  if (!repoPath || !vapid) {
-    toast('还没配置仓库和推送密钥', '⚠️');
-    $('notDeployedCard').classList.remove('hide');
-    return;
-  }
-  if (isIOS() && !isStandalone()) {
-    showIOS();
-    return;
-  }
-  if (!('Notification' in window)) { toast('这个浏览器不支持通知', '⚠️'); return; }
-  // 先确保 Service Worker 就绪（手机首次打开时它可能还在安装）
-  let reg = null;
-  try {
-    reg = await withTimeout(navigator.serviceWorker.ready, 8000);
-  } catch (e) {
-    try { await navigator.serviceWorker.register('sw.js'); reg = await withTimeout(navigator.serviceWorker.ready, 8000); }
-    catch (e2) { lastSubError = 'Service Worker 未就绪：' + (e2.message || e2); }
-  }
-  if (!reg || !reg.pushManager) {
-    lastSubError = lastSubError || 'Service Worker 未就绪，请刷新页面重试';
-    showSubError();
-    return;
-  }
-  // 再申请通知权限（必须在点了按钮之后、用户手势里调用）
-  const perm = await Notification.requestPermission();
-  if (perm !== 'granted') { toast('通知被拒绝了，请到浏览器设置里允许本站通知', '⚠️'); return; }
-  const reg2 = reg;
-  if (!reg2 || !reg2.pushManager) {
-    lastSubError = '浏览器不支持推送（缺少 pushManager）';
-    showSubError();
-    return;
-  }
-
-  let sub = await reg2.pushManager.getSubscription();
-  if (!sub) {
-    const cleaned = String(vapid).replace(/=+$/, '');
-    try {
-      sub = await reg2.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: b64uToBytes(cleaned)
+  function readRemote() {
+    return fetch(API + '?t=' + Date.now(), { headers: headers(), cache: 'no-store' }).then(function (r) {
+      if (r.status === 404) { state.data = defaults(); state.sha = null; return; }
+      if (!r.ok) throw new Error('读取失败 ' + r.status);
+      return r.json().then(function (j) {
+        var d = defaults();
+        try { d = JSON.parse(decodeURIComponent(escape(atob(j.content.replace(/\s/g, ''))))); } catch (e) {}
+        state.data = normalize(d);
+        state.sha = j.sha;
       });
-    } catch (e) {
-      lastSubError = '订阅失败：' + (e.message || e);
-      try {
-        const old = await reg2.pushManager.getSubscription();
-        if (old) await old.unsubscribe();
-        sub = await reg2.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(cleaned) });
-        lastSubError = '';
-      } catch (e2) {
-        lastSubError += ' / 重试：' + (e2.message || e2);
-        showSubError();
-        return;
+    });
+  }
+  function writeRemote(msg) {
+    if (!state.token) return Promise.reject(new Error('还没有令牌'));
+    if (state.busy) return Promise.reject(new Error('正在同步，请稍等'));
+    state.busy = true;
+    return readRemote().catch(function () {}).then(function () {
+      var body = {
+        message: 'fan-dian: ' + (msg || '更新'),
+        content: btoa(unescape(encodeURIComponent(JSON.stringify(data(), null, 2)))),
+        branch: 'main'
+      };
+      if (state.sha) body.sha = state.sha;
+      return fetch(API, { method: 'PUT', headers: headers(), body: JSON.stringify(body) });
+    }).then(function (r) {
+      if (!r.ok) {
+        return r.json().catch(function () { return {}; }).then(function (j) {
+          var hint = r.status === 401 ? '令牌无效或过期' : r.status === 403 ? '令牌没权限' : r.status === 409 ? '文件刚被改过，再点一次' : '';
+          throw new Error('写入失败 ' + r.status + (hint ? '：' + hint : '') + (j.message ? ' · ' + j.message : ''));
+        });
       }
+      return r.json().then(function (j) { state.sha = j && j.content && j.content.sha; });
+    }).then(function () {
+      localStorage.setItem('fd_token', state.token);
+      state.lastError = '';
+      showEl('subError', false);
+    })['catch'](function (e) {
+      state.lastError = e.message || String(e);
+      setText('subError', '❌ ' + state.lastError);
+      showEl('subError', true);
+      throw e;
+    })['finally'](function () { state.busy = false; });
+  }
+
+  /* ---------------- 渲染 ---------------- */
+  function render() {
+    var p = data().prefs;
+    // 开关
+    if ($('onSwitch')) $('onSwitch').checked = p.enabled !== false;
+    if ($('nameSwitch')) $('nameSwitch').checked = p.nameBad !== false;
+    // 时间
+    var box = $('times');
+    if (box) {
+      var labels = ['🌅 早饭', '☀️ 午饭', '🌙 晚饭'];
+      box.innerHTML = labels.map(function (m, i) {
+        return '<div class="time-row"><span class="meal">' + m + '</span><input type="time" data-t="' + i + '" value="' + (p.times[i] || '07:30') + '"></div>';
+      }).join('');
+      box.querySelectorAll('input[type=time]').forEach(function (inp) {
+        inp.addEventListener('change', function () {
+          if (!inp.value) return;
+          data().prefs.times[Number(inp.dataset.t)] = inp.value;
+          save('改饭点时间');
+        });
+      });
     }
-  }
-  const j = sub.toJSON();
-  const old = mySub();
-  const rec = {
-    id: old ? old.id : randomId(),
-    endpoint: j.endpoint,
-    keys: j.keys,
-    ua: (navigator.userAgent || '').slice(0, 120),
-    days: old ? old.days : [0, 1, 2, 3, 4, 5, 6],
-    created: old ? old.created : Date.now()
-  };
-  state.data.subs = state.data.subs.filter(s => s.id !== rec.id && s.endpoint !== rec.endpoint);
-  state.data.subs.push(rec);
-  localStorage.setItem('fd_push_sub', rec.id);
-  lastSubError = '';
-
-  // 先叫用户在本机点一下确认通知可用（跟云端无关）
-  try {
-    await (reg2.showNotification ? reg2.showNotification('🔔 已开启推送', {
-      body: '这是本机测试。到饭点会像这样提醒你：午饭别吃膨化、别吃涨肚。',
-      tag: 'fan-dian-enabled',
-      icon: 'icon-192.png',
-      badge: 'badge-72.png',
-      vibrate: [150, 60, 150]
-    }) : Promise.resolve());
-  } catch (e) {}
-  renderAll();
-  toast('本机通知已开启，正在上传到云端…', '🔔');
-
-  try {
-    await writeRemote('登记推送订阅');
-    renderAll();
-    toast('云端也登记好了！点「测试真推送」验证', '🎉');
-  } catch (e) {
-    showUnlock(String(e.message || e));
-    renderAll();
-  }
-}
-
-function showSubError() {
-  lastSubError = lastSubError || '';
-  $('subError').textContent = lastSubError;
-  $('subError').classList.toggle('hide', !lastSubError);
-  if (lastSubError) toast('开启推送失败：' + lastSubError.slice(0, 80), '⚠️');
-}
-
-async function disablePush() {
-  try {
-    const sub = await currentSubscription();
-    if (sub) await sub.unsubscribe();
-  } catch {}
-  const id = localStorage.getItem('fd_push_sub');
-  if (id) {
-    state.data.subs = state.data.subs.filter(s => s.id !== id);
-    localStorage.removeItem('fd_push_sub');
-    try { await writeRemote('取消推送订阅'); } catch (e) { showUnlock(String(e.message || e)); }
-  }
-  renderAll();
-  toast('已关闭推送', '🔕');
-}
-
-function testWebPush() {
-  const id = localStorage.getItem('fd_push_sub');
-  const sub = id && state.data.subs.find(s => s.id === id);
-  if (!sub) { toast('请先开启推送', '⚠️'); return; }
-  sub.test = Date.now();
-  // 保存到云端的“测试标记”，GitHub Actions 5 分钟内会看到它并立刻推一条测试
-  writeRemote('测试推送')
-    .then(() => {
-      toast('测试已排队，5 分钟内到达（可直接锁屏看）', '🧪');
-      $('subError').textContent = '';
-      $('subError').classList.add('hide');
-    })
-    .catch(e => {
-      $('subError').textContent = '测试推送登记失败：' + (e.message || e);
-      $('subError').classList.remove('hide');
-      showUnlock(String(e.message || e));
+    // 星期
+    ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'].forEach(function (d, i) {
+      var e = $('day-' + d);
+      if (e) e.classList[p.days.indexOf(i) >= 0 ? 'add' : 'remove']('on');
     });
-}
-
-async function sendLocalTest() {
-  const reg = await navigator.serviceWorker.ready;
-  const now = new Date();
-  await reg.showNotification('🧪 测试提醒', {
-    body: '现在 ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + '，到饭点我会这样叫你：\n午饭吃七八分就好，肉和菜多一点。\n雷区：薯片、虾条、锅巴 —— 会涨肚，别买。',
-    tag: 'fan-dian-test',
-    icon: 'icon-192.png',
-    badge: 'badge-72.png',
-    vibrate: [160, 70, 160, 70, 320],
-    data: { url: './', ts: Date.now() }
-  });
-  toast('如果看到通知，说明通知权限正常', '🧪');
-}
-
-/* ---------------- 界面渲染 ---------------- */
-function renderBell() {
-  const id = localStorage.getItem('fd_push_sub');
-  const mine = id && state.data.subs.find(s => s.id === id);
-  $('bell').classList.toggle('on', !!mine);
-  $('bellState').textContent = mine ? '已开启 · 手机系统会自动提醒' : '未开启 · 点下面开启';
-  $('enableBtn').hidden = !!mine;
-  $('disableBtn').hidden = !mine;
-  $('testBtn').hidden = !mine;
-  $('permPill').textContent = ('Notification' in window) ? ({ granted: '已允许', denied: '已拒绝', default: '待允许' }[Notification.permission] || '') : '不支持';
-  $('permPill').className = 'pill ' + (('Notification' in window) && Notification.permission === 'granted' ? 'ok' : '');
-  // 手机已装成 App 且通知已允许 → iPhone 提示卡片就不用再显示了
-  const ready = isStandalone() && ('Notification' in window) && Notification.permission === 'granted';
-  $('iosCard').classList.toggle('hide', ready);
-  if (!isSecure()) $('insecureCard').classList.remove('hide');
-  if (!API) $('notDeployedCard').classList.remove('hide');
-}
-
-function renderSync() {
-  if (state.token) {
-    $('syncState').textContent = `已连接 ${repoPath || '（未配置仓库）'}`;
-    $('syncState').className = 'pill ok';
-    $('syncBtn').textContent = '重新同步';
-  } else {
-    $('syncState').textContent = '未连接（本机预览）';
-    $('syncState').className = 'pill';
-    $('syncBtn').textContent = '连接仓库';
-  }
-}
-
-function renderSchedule() {
-  const p = state.data.prefs;
-  $('onSwitch').checked = p.enabled !== false;
-  $('nameSwitch').checked = p.nameBad !== false;
-  const meals = ['🌅 早饭', '☀️ 午饭', '🌙 晚饭'];
-  $('times').innerHTML = meals.map((m, i) => `
-    <div class="time-row">
-      <span class="meal">${m}</span>
-      <input type="time" data-t="${i}" value="${p.times[i]}">
-      <span class="hint" id="days-${i}"></span>
-    </div>`).join('');
-  $('times').querySelectorAll('input[type=time]').forEach(inp => {
-    inp.addEventListener('change', () => {
-      const i = Number(inp.dataset.t);
-      if (!inp.value) return;
-      state.data.prefs.times[i] = inp.value;
-      savePrefs('改饭点时间');
-    });
-  });
-  ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'].forEach((d, i) => {
-    const el = $('day-' + d);
-    el.classList.toggle('on', (p.days || [0, 1, 2, 3, 4, 5, 6]).includes(i));
-  });
-  const win = $('windowSeg').querySelectorAll('button');
-  win.forEach(b => b.classList.toggle('on', Number(b.dataset.win) === p.window));
-}
-
-function renderWire() {
-  const today = todayKey();
-  const fired = state.data.fired || {};
-  const sent = [0, 1, 2].some(i => fired[`${today}|${i}`]);
-  createWire($('wire'), { sent: sent });
-}
-
-function renderTheme() {
-  const t = state.data.prefs.theme || 'terracotta';
-  document.documentElement.setAttribute('data-theme', t);
-  document.querySelectorAll('#themes button').forEach(b => b.classList.toggle('on', b.dataset.theme === t));
-  const meta = document.querySelector('meta[name=theme-color]');
-  if (meta) meta.setAttribute('content', getComputedStyle(document.documentElement).getPropertyValue('--bg').trim());
-}
-
-function renderSubs() {
-  const id = localStorage.getItem('fd_push_sub');
-  $('subsCount').textContent = `${state.data.subs.length} 台设备已登记`;
-  $('subsList').innerHTML = state.data.subs.length ? state.data.subs.map((s, i) => {
-    const isMine = s.id === id;
-    return `<div class="sub ${isMine ? 'mine' : ''}">
-      <div><b>${isMine ? '📱 这台手机' : '🖥 其他设备'}</b><div class="hint">${new Date(s.created || Date.now()).toLocaleDateString()} 登记${s.test ? ' · 有测试待发' : ''}</div></div>
-      <button class="x" data-del="${i}" aria-label="移除">×</button>
-    </div>`;
-  }).join('') : '<div class="empty">还没有设备</div>';
-  $('subsList').querySelectorAll('button[data-del]').forEach(b => b.addEventListener('click', () => {
-    state.data.subs.splice(Number(b.dataset.del), 1);
-    savePrefs('移除设备');
-  }));
-}
-
-function renderAll() {
-  renderBell();
-  renderSync();
-  renderSchedule();
-  renderTheme();
-  renderSubs();
-  renderWire();
-}
-async function savePrefs(what) {
-  try {
-    await writeRemote(what || '改设置');
-    toast('已同步 ✓', '☁️');
-  } catch (e) {
-    showUnlock(String(e.message || e));
-  }
-  renderAll();
-}
-
-/* ---------------- 解锁 / iOS 提示 ---------------- */
-function showUnlock(msg) {
-  $('unlockCard').classList.remove('hide');
-  $('unlockMsg').textContent = msg || '云同步需要一次 GitHub Token（只保存在本机），之后不再打扰。';
-  renderSync();
-}
-function showIOS() {
-  $('unlockSheet').classList.add('show');
-  $('iosTitle').textContent = 'iPhone 需要先「添加到主屏幕」';
-  $('iosSteps').innerHTML = `
-    <li>用 Safari 打开本页 → 点底部「分享」→ 选「添加到主屏幕」。</li>
-    <li>从桌面图标打开本页（不是 Safari 里）。</li>
-    <li>再点「开启推送」并允许通知。</li>
-    <li>之后就算 App 完全关掉、锁屏，到饭点也会弹通知（需 iOS 16.4 及以上）。</li>`;
-  $('unlockSheet').classList.remove('hide');
-  $('iosCard').classList.remove('hide');
-}
-
-/* ---------------- 启动 ---------------- */
-async function init() {
-  state.token = localStorage.getItem('fd_push_token') || '';
-  renderTheme();
-  if (state.token) state.unlocked = true;
-  // 先把当前仓库名读出来（config.json），后面所有按钮才能工作
-  try { await loadConfig(); } catch (e) {}
-
-  if ('serviceWorker' in navigator && isSecure()) {
-    try { await navigator.serviceWorker.register('sw.js'); } catch (e) { console.warn(e); }
-  }
-
-  // 读取云端设置失败不应阻塞界面
-  try { await withTimeout(readRemote(), 10000); } catch (e) {
-    $('subError').textContent = '读取云端设置失败：' + (e.message || e) + '（不影响手机通知）';
-    $('subError').classList.remove('hide');
-  }
-  renderAll();
-
-  // 订阅按钮
-  $('enableBtn').addEventListener('click', () => withSpinner($('enableBtn'), '正在开启…', enablePush));
-  $('disableBtn').addEventListener('click', () => withSpinner($('disableBtn'), '正在关闭…', disablePush));
-  $('testBtn').addEventListener('click', sendLocalTest);
-  $('webPushTestBtn').addEventListener('click', () => withSpinner($('webPushTestBtn'), '排队中…', async () => { testWebPush(); }));
-
-  // 同步
-  $('syncBtn').addEventListener('click', () => showUnlock());
-  async function checkToken(t) {
-    // 只验证令牌身份，不写任何文件
-    const r = await fetch('https://api.github.com/user', {
-      headers: { Authorization: `Bearer ${t}`, Accept: 'application/vnd.github+json' }
-    });
-    if (r.status === 401) throw new Error('令牌无效或已过期（401），请重新生成');
-    if (!r.ok) throw new Error('检查令牌失败（' + r.status + '）');
-    const j = await r.json().catch(() => ({}));
-    return j.login || '';
-  }
-  $('testTokenBtn').addEventListener('click', async () => {
-    const t = $('tokenInput').value.trim();
-    if (!t) { $('unlockMsg').textContent = '请先在上面的框里粘贴令牌'; return; }
-    if (!/^gh[ps]_/.test(t)) { $('unlockMsg').textContent = '这串看着不像 GitHub 令牌（应该以 ghp_ 或 ghs_ 开头）'; return; }
-    try {
-      const who = await checkToken(t);
-      $('unlockMsg').textContent = '✅ 令牌有效' + (who ? '，属于账号 ' + who : '') + '。现在点「保存并同步」即可。';
-    } catch (e) { $('unlockMsg').textContent = '❌ ' + (e.message || e); }
-  });
-  $('saveToken').addEventListener('click', async () => {
-    const t = $('tokenInput').value.trim();
-    if (!t) { $('unlockMsg').textContent = '请先在上面的框里粘贴令牌'; return; }
-    if (!/^gh[ps]_/.test(t)) { $('unlockMsg').textContent = '这串看着不像 GitHub 令牌（应该以 ghp_ 或 ghs_ 开头）'; return; }
-    const btn = $('saveToken');
-    btn.disabled = true; const oldLabel = btn.textContent; btn.textContent = '正在同步…';
-    state.token = t;
-    try {
-      await checkToken(t);
-      await writeRemote('连接仓库');
-      localStorage.setItem('fd_push_token', t);
-      $('unlockCard').classList.add('hide');
-      $('subError').classList.add('hide');
-      toast('连接成功，以后自动同步 ✓', '☁️');
-    } catch (e) {
-      $('unlockMsg').textContent = '❌ 同步失败：' + String(e.message || e) + '（令牌先不保存，修好后重试）';
-    } finally {
-      btn.disabled = false; btn.textContent = oldLabel;
-      renderAll();
+    // 提醒时长
+    var seg = $('windowSeg');
+    if (seg) seg.querySelectorAll('button').forEach(function (b) { b.classList[Number(b.dataset.win) === p.window ? 'add' : 'remove']('on'); });
+    // 主题
+    document.documentElement.setAttribute('data-theme', p.theme || 'terracotta');
+    document.querySelectorAll('#themes button').forEach(function (b) { b.classList[b.dataset.theme === p.theme ? 'add' : 'remove']('on'); });
+    // 设备
+    var mine = localStorage.getItem('fd_sub');
+    setText('subsCount', data().subs.length + ' 台设备已登记');
+    var list = $('subsList');
+    if (list) {
+      list.innerHTML = data().subs.length ? data().subs.map(function (s, i) {
+        return '<div class="sub' + (s.id === mine ? ' mine' : '') + '"><div><b>' + (s.id === mine ? '📱 这台手机' : '🖥 其他设备') + '</b></div><button class="x" data-del="' + i + '">×</button></div>';
+      }).join('') : '<div class="empty">还没有设备</div>';
+      list.querySelectorAll('button[data-del]').forEach(function (b) {
+        b.addEventListener('click', function () { data().subs.splice(Number(b.dataset.del), 1); save('移除设备'); });
+      });
     }
-  });
+    // 同步状态
+    var connected = !!localStorage.getItem('fd_token');
+    setText('syncState', connected ? '已连接 ' + REPO : '未连接（只需一次令牌）');
+    setText('syncBtn', connected ? '重新同步' : '连接仓库');
+    // 铃铛状态
+    var sub = data().subs.filter(function (s) { return s.id === mine; })[0];
+    var bell = $('bell');
+    if (bell) bell.classList[sub ? 'add' : 'remove']('on');
+    setText('bellState', sub ? '已开启 · 手机系统会自动提醒' : '未开启 · 点下面开启');
+    showEl('disableBtn', !!sub);
+    showEl('webPushTestBtn', !!sub);
+    var perm = ('Notification' in window) ? Notification.permission : 'unsupported';
+    setText('permPill', { granted: '已允许', denied: '已拒绝', default: '待允许', unsupported: '不支持' }[perm] || '');
+    if ($('permPill')) $('permPill').className = 'pill' + (perm === 'granted' ? ' ok' : '');
+    showEl('iosCard', !(isIOS() && !isStandalone()));
+    drawWire();
+  }
+  function save(msg) {
+    render();
+    if (!localStorage.getItem('fd_token')) { toast('已保存在本机（令牌可自动同步）', '💾'); return; }
+    writeRemote(msg).then(function () { toast('已同步 ✓', '☁️'); })['catch'](function (e) { toast(String(e.message || e), '⚠️'); });
+  }
 
-  // 开关
-  $('onSwitch').addEventListener('change', e => { state.data.prefs.enabled = e.target.checked; savePrefs(e.target.checked ? '开启提醒' : '暂停提醒'); });
-  $('windowSeg').addEventListener('click', e => {
-    const b = e.target.closest('button'); if (!b) return;
-    state.data.prefs.window = Number(b.dataset.win); savePrefs('改提醒持续时长');
-  });
-  document.querySelectorAll('.days').forEach(row => row.addEventListener('click', e => {
-    const b = e.target.closest('button'); if (!b) return;
-    const d = Number(b.dataset.day);
-    const p = state.data.prefs;
-    p.days = p.days || [0, 1, 2, 3, 4, 5, 6];
-    p.days = p.days.includes(d) ? p.days.filter(x => x !== d) : [...p.days, d].sort();
-    b.classList.toggle('on');
-    savePrefs('改提醒日');
-  }));
-  $('themes').addEventListener('click', e => {
-    const b = e.target.closest('button'); if (!b) return;
-    state.data.prefs.theme = b.dataset.theme;
-    renderTheme();
-    savePrefs('更换主题');
-  });
-  $('nameSwitch').addEventListener('change', e => { state.data.prefs.nameBad = e.target.checked; savePrefs('改文案'); });
+  /* ---------------- 铁线时钟 ---------------- */
+  function drawWire() {
+    var host = $('wire');
+    if (!host) return;
+    var NS = 'http://www.w3.org/2000/svg';
+    var meals = [
+      { label: '早饭', time: (data().prefs.times[0] || '07:30'), x: 74, y: 100 },
+      { label: '午饭', time: (data().prefs.times[1] || '11:45'), x: 226, y: 212 },
+      { label: '晚饭', time: (data().prefs.times[2] || '17:45'), x: 96, y: 330 }
+    ];
+    var today = todayKey(), fired = data().fired || {};
+    var sent = [0, 1, 2].some(function (i) { return fired[today + '|' + i]; });
+    host.innerHTML = '';
+    var svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 320 420');
+    svg.setAttribute('class', 'wire-svg');
+    var path = document.createElementNS(NS, 'path');
+    path.setAttribute('d', 'M 26 18 C 150 16, 34 120, 104 132 S 246 160, 232 208 S 60 282, 116 302 S 190 352, 150 404');
+    path.setAttribute('class', 'wire-line');
+    svg.appendChild(path);
+    meals.forEach(function (m, i) {
+      var g = document.createElementNS(NS, 'g');
+      g.setAttribute('class', 'wire-node');
+      g.style.setProperty('--i', i);
+      [['circle', { cx: m.x, cy: m.y, r: 16, 'class': 'node-halo' }],
+       ['circle', { cx: m.x, cy: m.y, r: 7.5, 'class': 'node-dot' }],
+       ['text', { x: m.x, y: m.y - 24, 'text-anchor': 'middle', 'class': 'node-label', text: m.label }],
+       ['text', { x: m.x, y: m.y + 34, 'text-anchor': 'middle', 'class': 'node-time', text: m.time }]
+      ].forEach(function (spec) {
+        var el = document.createElementNS(NS, spec[0]);
+        Object.keys(spec[1]).forEach(function (k) {
+          if (k === 'text') el.textContent = spec[1][k]; else el.setAttribute(k, spec[1][k]);
+        });
+        g.appendChild(el);
+      });
+      svg.appendChild(g);
+    });
+    host.appendChild(svg);
+    var cap = document.createElement('div');
+    cap.className = 'wire-caption' + (sent ? ' sent' : '');
+    cap.innerHTML = sent
+      ? '<b>今天的提醒已送达</b><span>线走到这里，剩下的交给晚饭前的那阵饥饿感吧。</span>'
+      : '<b>铁丝正在路上</b><span>到点手机会自己响 · ' + meals.map(function (m) { return m.time; }).join(' / ') + '</span>';
+    host.appendChild(cap);
+  }
 
-  // iOS 提示
-  $('iosClose').addEventListener('click', () => $('unlockSheet').classList.remove('show'));
-  $('iosGotIt').addEventListener('click', () => $('unlockSheet').classList.remove('show'));
-  $('iosCardBtn').addEventListener('click', showIOS);
-  $('iosCard').classList.add('hide');
+  /* ---------------- 推送 ---------------- */
+  function vapidKey() {
+    return fetch('config.json?t=' + Date.now(), { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : {}; })
+      .then(function (c) { return (c && c.vapidPublicKey) || VAPID_FALLBACK; })
+      ['catch'](function () { return VAPID_FALLBACK; });
+  }
+  function waitSW() {
+    return new Promise(function (resolve, reject) {
+      if (!('serviceWorker' in navigator)) return reject(new Error('这个浏览器不支持网页推送'));
+      navigator.serviceWorker.register('sw.js')['catch'](function () {});
+      navigator.serviceWorker.ready.then(resolve);
+      setTimeout(function () { reject(new Error('Service Worker 没有就绪，请刷新页面重试')); }, 12000);
+    });
+  }
+  function enablePush() {
+    if (isIOS() && !isStandalone()) { showIOS(); return Promise.resolve(); }
+    if (!('Notification' in window)) { toast('浏览器不支持通知', '⚠️'); return Promise.resolve(); }
+    return waitSW().then(function (reg) {
+      return Promise.all([Notification.requestPermission(), vapidKey()]).then(function (res) {
+        var perm = res[0], key = res[1];
+        if (perm !== 'granted') throw new Error('通知被拒绝了，请到浏览器设置里允许本站通知');
+        return reg.pushManager.getSubscription().then(function (sub) {
+          if (sub) return sub;
+          return reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(key) });
+        });
+      }).then(function (sub) {
+        var j = sub.toJSON();
+        var mine = localStorage.getItem('fd_sub');
+        var rec = {
+          id: mine || randomId(),
+          endpoint: j.endpoint,
+          keys: j.keys,
+          ua: (navigator.userAgent || '').slice(0, 120),
+          days: [0, 1, 2, 3, 4, 5, 6],
+          created: Date.now()
+        };
+        var old = data().subs.filter(function (s) { return s.id === mine; })[0];
+        if (old) { rec.days = old.days || rec.days; rec.created = old.created || rec.created; }
+        data().subs = data().subs.filter(function (s) { return s.id !== rec.id && s.endpoint !== rec.endpoint; });
+        data().subs.push(rec);
+        localStorage.setItem('fd_sub', rec.id);
+        render();
+        // 本机先弹一条，确认通知真的能用
+        try {
+          reg.showNotification('🔔 已开启推送', {
+            body: '这是本机测试。到饭点会像这样叫你：午饭别吃膨化、别吃涨肚。',
+            tag: 'fd-enabled', icon: 'icon-192.png', badge: 'badge-72.png', vibrate: [150, 60, 150]
+          });
+        } catch (e) {}
+        toast('本机通知已开启，正在上传到云端…', '🔔');
+        if (!localStorage.getItem('fd_token')) {
+          showUnlock('还差一步：粘贴一次 GitHub 令牌，把手机登记到云端。');
+          return;
+        }
+        return writeRemote('登记推送订阅').then(function () { toast('云端也登记好了！点「测试真推送」', '🎉'); });
+      });
+    })['catch'](function (e) {
+      setText('subError', '❌ ' + (e.message || e));
+      showEl('subError', true);
+    });
+  }
+  function testPush() {
+    var mine = localStorage.getItem('fd_sub');
+    var sub = data().subs.filter(function (s) { return s.id === mine; })[0];
+    if (!sub) { toast('请先开启推送', '⚠️'); return; }
+    sub.test = Date.now();
+    if (!localStorage.getItem('fd_token')) { showUnlock('需要一个令牌才能把「测试」通知服务器'); return; }
+    writeRemote('测试推送').then(function () { toast('测试已排队，5 分钟内到（可锁屏等）', '🧪'); })['catch'](function () {});
+  }
 
-  setInterval(() => { $('clock').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false }); }, 1000);
-  $('clock').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  /* ---------------- 令牌 ---------------- */
+  function showUnlock(msg) {
+    showEl('unlockCard', true);
+    setText('unlockMsg', msg || '粘贴一次 GitHub 令牌（只保存在本机）');
+  }
+  function checkToken(t) {
+    return fetch('https://api.github.com/user', { headers: { Authorization: 'Bearer ' + t, Accept: 'application/vnd.github+json' } })
+      .then(function (r) {
+        if (r.status === 401) throw new Error('令牌无效或已过期（401），请重新生成');
+        if (!r.ok) throw new Error('检查令牌失败（' + r.status + '）');
+        return r.json();
+      });
+  }
+  function bindToken() {
+    on('syncBtn', 'click', function () { showUnlock(); });
+    on('testTokenBtn', 'click', function () {
+      var t = ($('tokenInput') || {}).value || '';
+      t = t.trim();
+      if (!t) { setText('unlockMsg', '请先把令牌粘贴到上面的框里'); return; }
+      if (!/^gh[ps]_/.test(t)) { setText('unlockMsg', '这串不像 GitHub 令牌（应以 ghp_ 开头）'); return; }
+      setText('unlockMsg', '正在检查…');
+      checkToken(t).then(function (u) {
+        setText('unlockMsg', '✅ 令牌有效（账号 ' + (u.login || '') + '），现在点「保存并同步」');
+      })['catch'](function (e) { setText('unlockMsg', '❌ ' + e.message); });
+    });
+    on('saveToken', 'click', function () {
+      var btn = $('saveToken');
+      var t = (($('tokenInput') || {}).value || '').trim();
+      if (!t) { setText('unlockMsg', '请先把令牌粘贴到上面的框里'); return; }
+      if (!/^gh[ps]_/.test(t)) { setText('unlockMsg', '这串不像 GitHub 令牌（应以 ghp_ 开头）'); return; }
+      if (btn) { btn.disabled = true; btn.textContent = '正在同步…'; }
+      state.token = t;
+      checkToken(t)
+        .then(function () { return writeRemote('连接仓库'); })
+        .then(function () {
+          showEl('unlockCard', false);
+          toast('连接成功，以后自动同步 ✓', '☁️');
+          render();
+        })
+        ['catch'](function (e) {
+          setText('unlockMsg', '❌ ' + (e.message || e));
+        })['finally'](function () {
+          if (btn) { btn.disabled = false; btn.textContent = '保存并同步'; }
+        });
+    });
+  }
 
-  // 回到前台时同步一次（可能别的设备改过）
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && API) readRemote().catch(() => {});
-  });
-}
+  /* ---------------- iOS 提示 ---------------- */
+  function showIOS() {
+    showEl('unlockSheet', true);
+    setText('iosTitle', 'iPhone 需要先「添加到主屏幕」');
+    var ul = $('iosSteps');
+    if (ul) ul.innerHTML = '<li>用 Safari 打开本页 → 底部「分享」→「添加到主屏幕」</li><li>从桌面图标打开本页</li><li>再点「开启推送」并允许通知</li><li>之后关掉 App、锁屏也会响（iOS 16.4+）</li>';
+  }
 
-function withSpinner(btn, label, fn) {
-  const old = btn.textContent;
-  btn.disabled = true; btn.textContent = label;
-  Promise.resolve().then(fn).catch(e => { toast(String(e.message || e), '⚠️'); }).finally(() => { btn.disabled = false; btn.textContent = old; });
-}
+  /* ---------------- 启动 ---------------- */
+  function boot() {
+    state.token = localStorage.getItem('fd_token') || '';
+    render();
+    readRemote().then(render)['catch'](function () { render(); });
 
-init();
+    on('enableBtn', 'click', enablePush);
+    on('disableBtn', 'click', function () {
+      navigator.serviceWorker.ready.then(function (reg) {
+        return reg.pushManager.getSubscription();
+      }).then(function (sub) { return sub ? sub.unsubscribe() : null; })['catch'](function () {});
+      var mine = localStorage.getItem('fd_sub');
+      if (mine) {
+        data().subs = data().subs.filter(function (s) { return s.id !== mine; });
+        localStorage.removeItem('fd_sub');
+        if (localStorage.getItem('fd_token')) writeRemote('取消订阅')['catch'](function () {});
+      }
+      render();
+      toast('已关闭推送', '🔕');
+    });
+    on('webPushTestBtn', 'click', testPush);
+    on('onSwitch', 'change', function (e) { data().prefs.enabled = e.target.checked; save(e.target.checked ? '开启提醒' : '暂停提醒'); });
+    on('nameSwitch', 'change', function (e) { data().prefs.nameBad = e.target.checked; save('改文案'); });
+    on('windowSeg', 'click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      data().prefs.window = Number(b.dataset.win); save('改提醒时长');
+    });
+    on('themes', 'click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      data().prefs.theme = b.dataset.theme; render(); save('换主题');
+    });
+    document.querySelectorAll('.days').forEach(function (row) {
+      row.addEventListener('click', function (e) {
+        var b = e.target.closest('button'); if (!b) return;
+        var d = Number(b.dataset.day), p = data().prefs;
+        p.days = p.days.indexOf(d) >= 0 ? p.days.filter(function (x) { return x !== d; }) : p.days.concat([d]).sort();
+        b.classList.toggle('on'); save('改提醒日');
+      });
+    });
+    on('iosCardBtn', 'click', showIOS);
+    on('iosGotIt', 'click', function () { showEl('unlockSheet', false); });
+    on('iosClose', 'click', function () { showEl('unlockSheet', false); });
+    bindToken();
+
+    setInterval(function () { var c = $('clock'); if (c) c.textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false }); }, 1000);
+    var c0 = $('clock'); if (c0) c0.textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js')['catch'](function () {});
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+  else boot();
+})();
