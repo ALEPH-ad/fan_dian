@@ -1,359 +1,413 @@
-<!DOCTYPE html>
-<html lang="zh-CN" data-theme="terracotta">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#f5ece2">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="apple-mobile-web-app-title" content="铁线饭点">
-<meta name="description" content="到饭点，手机会自己响：提醒你别吃膨化、别吃太涨肚。">
-<link rel="manifest" href="manifest.json">
-<link rel="icon" href="icon-192.png" sizes="192x192" type="image/png">
-<link rel="apple-touch-icon" href="icon-192.png">
-<title>铁线饭点 · 到点自己响</title>
-<style>
-  /* ---------- 主题 ---------- */
-  :root, [data-theme="terracotta"] {
-    --bg: #f5ece2; --bg2: #ffe6d4; --card: #fffaf5; --ink: #3f2f24; --muted: #8e7866;
-    --line: #ecd9c7; --accent: #de5b39; --accent2: #f0a35e; --accent-soft: #fbe1d4;
-    --ok: #4f9463; --ok-soft: #e4f2e6; --dot: #de5b39; --wire: #c8a285;
+import { createWire } from './wire.js';
+
+const repoPath = (window.__FD_REPO__ || '').replace(/^\/+|\/+$/g, '');
+const DATA_PATH = 'data.json';
+const API = repoPath ? `https://api.github.com/repos/${repoPath}/contents/${DATA_PATH}` : '';
+
+const DEFAULTS = {
+  subs: [],
+  prefs: { enabled: true, window: 60, times: ['07:30', '11:45', '17:45'], days: [0, 1, 2, 3, 4, 5, 6], theme: 'terracotta', nameBad: true },
+  fired: {}
+};
+
+const state = {
+  data: structuredClone(DEFAULTS),
+  sha: null,
+  token: '',
+  unlocked: false,
+  busy: false
+};
+
+/* ---------------- 工具 ---------------- */
+const $ = id => document.getElementById(id);
+function b64uToBytes(b64u) {
+  return Uint8Array.from(atob(b64u.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+}
+function bytesToB64u(buf) {
+  return btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function randomId() { return bytesToB64u(crypto.getRandomValues(new Uint8Array(9))); }
+function pad(n) { return String(n).padStart(2, '0'); }
+function todayKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+function fmt(ts) {
+  const d = new Date(ts);
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function toast(text, icon = '🍚') {
+  const t = $('toast');
+  $('toastIcon').textContent = icon;
+  $('toastText').textContent = text;
+  t.classList.add('show');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove('show'), 2400);
+}
+function isStandalone() {
+  return matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+}
+function isSecure() {
+  return location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+}
+function isIOS() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+/* ---------------- 云同步（GitHub） ---------------- */
+function ghHeaders() {
+  const h = { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'Content-Type': 'application/json' };
+  if (state.token) h.Authorization = `Bearer ${state.token}`;
+  return h;
+}
+async function readRemote() {
+  if (!API) { renderAll(); return; }
+  const r = await fetch(`${API}?t=${Date.now()}`, { headers: ghHeaders() });
+  if (r.status === 404) { state.data = structuredClone(DEFAULTS); state.sha = null; renderAll(); return; }
+  if (!r.ok) throw new Error(`读取 data.json 失败（${r.status}）`);
+  const j = await r.json();
+  let data;
+  try { data = JSON.parse(decodeURIComponent(escape(atob(j.content.replace(/\s/g, ''))))); } catch { data = structuredClone(DEFAULTS); }
+  data.subs = data.subs || [];
+  data.prefs = Object.assign(structuredClone(DEFAULTS.prefs), data.prefs || {});
+  data.fired = data.fired || {};
+  state.data = data;
+  state.sha = j.sha;
+  renderAll();
+}
+async function writeRemote(message = '更新订阅/设置') {
+  if (!API) throw new Error('还没配置仓库路径');
+  if (!state.token) throw new Error('需要 GitHub Token 才能写入（点「连接仓库」）');
+  if (state.busy) throw new Error('正在同步，请稍等');
+  state.busy = true;
+  try {
+    // 重新取一次 sha，减少冲突
+    try { await readRemote(); } catch {}
+    const body = {
+      message: `fan-dian: ${message}`,
+      content: btoa(unescape(encodeURIComponent(JSON.stringify(state.data, null, 2)))),
+      branch: 'main'
+    };
+    if (state.sha) body.sha = state.sha;
+    const r = await fetch(API, { method: 'PUT', headers: ghHeaders(), body: JSON.stringify(body) });
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      throw new Error(`写入失败（${r.status}${j.message ? ' ' + j.message : ''}）`);
+    }
+    const j = await r.json();
+    state.sha = j.content && j.content.sha;
+    state.unlocked = true;
+    localStorage.setItem('fd_push_token', state.token);
+    renderSync();
+  } finally {
+    state.busy = false;
   }
-  [data-theme="mist"] {
-    --bg: #eaf0ef; --bg2: #d7e6e2; --card: #f8fcfb; --ink: #223330; --muted: #6b7f7a;
-    --line: #d2e2de; --accent: #2e8f83; --accent2: #7fc2b4; --accent-soft: #d8efea;
-    --ok: #3c8a5a; --ok-soft: #e0f2e6; --dot: #2e8f83; --wire: #8fb7ad;
+}
+
+/* ---------------- 订阅 ---------------- */
+async function currentSubscription() {
+  if (!('serviceWorker' in navigator)) return null;
+  const reg = await navigator.serviceWorker.ready;
+  return reg.pushManager.getSubscription();
+}
+function mySub() {
+  const mine = localStorage.getItem('fd_push_sub');
+  if (!mine) return null;
+  return state.data.subs.find(s => s.id === mine) || null;
+}
+async function enablePush() {
+  if (!isSecure()) { toast('请用 https 地址打开，file:// 无法收推送', '⚠️'); return; }
+  const cfg = await fetch('config.json', { cache: 'no-store' }).then(r => r.json()).catch(() => ({}));
+  if (!cfg.githubRepo || !cfg.vapidPublicKey) {
+    toast('还没配置仓库和推送密钥，先看 部署步骤.md 第 2 步', '⚠️');
+    $('notDeployedCard').classList.remove('hide');
+    return;
   }
-  [data-theme="night"] {
-    --bg: #161b22; --bg2: #23304a; --card: #1d242e; --ink: #e8eef7; --muted: #93a1b5;
-    --line: #2c3645; --accent: #ffb454; --accent2: #ff7a5c; --accent-soft: #33301f;
-    --ok: #68c98a; --ok-soft: #1f3327; --dot: #ffb454; --wire: #5d6b7f;
+  if (isIOS() && !isStandalone()) {
+    showIOS();
+    return;
   }
-  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body { margin: 0; }
-  body {
-    font-family: "PingFang SC", "HarmonyOS Sans SC", "MiSans", "Noto Sans SC", -apple-system, system-ui, sans-serif;
-    color: var(--ink);
-    background:
-      radial-gradient(900px 420px at 12% -8%, var(--bg2) 0%, transparent 62%),
-      radial-gradient(700px 380px at 105% 8%, color-mix(in srgb, var(--accent2) 22%, transparent) 0%, transparent 60%),
-      var(--bg);
-    min-height: 100vh;
-    padding-bottom: calc(28px + env(safe-area-inset-bottom));
-    transition: background .4s ease, color .4s ease;
+  if (!('Notification' in window)) { toast('这个浏览器不支持通知', '⚠️'); return; }
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') { toast('通知被拒绝了，请到浏览器设置里允许本站通知', '⚠️'); return; }
+
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) {
+    const cleaned = cfg.vapidPublicKey.replace(/=+$/, '');
+    try {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: b64uToBytes(cleaned)
+      });
+    } catch (e) {
+      // 换了公钥：旧订阅失效，退订后重来
+      const old = await reg.pushManager.getSubscription();
+      if (old) { await old.unsubscribe(); }
+      sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(cleaned) });
+    }
   }
-  .wrap { max-width: 520px; margin: 0 auto; padding: 18px 16px 0; }
-
-  /* ---------- 顶部 ---------- */
-  .brand { display: flex; align-items: center; gap: 10px; padding: 4px 2px 2px; }
-  .brand-mark {
-    width: 44px; height: 44px; border-radius: 14px; flex: none;
-    background: conic-gradient(from 200deg, var(--accent), var(--accent2), var(--accent));
-    display: grid; place-items: center; color: #fff; font-size: 22px;
-    box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 35%, transparent);
+  const j = sub.toJSON();
+  const old = mySub();
+  const rec = {
+    id: old ? old.id : randomId(),
+    endpoint: j.endpoint,
+    keys: j.keys,
+    ua: (navigator.userAgent || '').slice(0, 120),
+    days: old ? old.days : [0, 1, 2, 3, 4, 5, 6],
+    created: old ? old.created : Date.now()
+  };
+  state.data.subs = state.data.subs.filter(s => s.id !== rec.id && s.endpoint !== rec.endpoint);
+  state.data.subs.push(rec);
+  localStorage.setItem('fd_push_sub', rec.id);
+  try {
+    await writeRemote('登记推送订阅');
+  } catch (e) {
+    showUnlock(String(e.message || e));
+    renderAll();
+    return;
   }
-  .brand h1 { font-size: 19px; margin: 0; letter-spacing: .5px; }
-  .brand p { margin: 2px 0 0; color: var(--muted); font-size: 12px; letter-spacing: .3px; }
-  .brand .clock { margin-left: auto; font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); }
+  renderAll();
+  toast('已开启！到饭点手机会自己响', '🔔');
+}
 
-  /* ---------- 卡片 ---------- */
-  .card {
-    position: relative; padding: 16px;
-    background: var(--card);
-    border: 1px solid var(--line); border-radius: 22px;
-    box-shadow: 0 12px 30px rgba(60, 40, 25, .07);
-    margin-top: 14px; overflow: hidden;
+async function disablePush() {
+  try {
+    const sub = await currentSubscription();
+    if (sub) await sub.unsubscribe();
+  } catch {}
+  const id = localStorage.getItem('fd_push_sub');
+  if (id) {
+    state.data.subs = state.data.subs.filter(s => s.id !== id);
+    localStorage.removeItem('fd_push_sub');
+    try { await writeRemote('取消推送订阅'); } catch (e) { showUnlock(String(e.message || e)); }
   }
-  [data-theme="night"] .card { box-shadow: 0 12px 30px rgba(0, 0, 0, .35); }
-  .card h2 { margin: 0 0 12px; font-size: 14px; font-weight: 700; letter-spacing: .4px; display: flex; gap: 8px; align-items: center; }
-  .card h2 .n {
-    font-size: 11px; color: var(--accent); background: var(--accent-soft);
-    border-radius: 999px; padding: 2px 8px; letter-spacing: .5px;
+  renderAll();
+  toast('已关闭推送', '🔕');
+}
+
+function testWebPush() {
+  const id = localStorage.getItem('fd_push_sub');
+  const sub = id && state.data.subs.find(s => s.id === id);
+  if (!sub) { toast('请先开启推送', '⚠️'); return; }
+  // GitHub Actions 5 分钟内会看到 test 标记并立即推送
+  sub.test = Date.now();
+  writeRemote('测试推送').then(() => toast('测试已排队，5 分钟内到达', '🧪')).catch(e => showUnlock(String(e.message || e)));
+}
+
+async function sendLocalTest() {
+  const reg = await navigator.serviceWorker.ready;
+  const now = new Date();
+  await reg.showNotification('🧪 测试提醒', {
+    body: '现在 ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + '，到饭点我会这样叫你：\n午饭吃七八分就好，肉和菜多一点。\n雷区：薯片、虾条、锅巴 —— 会涨肚，别买。',
+    tag: 'fan-dian-test',
+    icon: 'icon-192.png',
+    badge: 'badge-72.png',
+    vibrate: [160, 70, 160, 70, 320],
+    data: { url: './', ts: Date.now() }
+  });
+  toast('如果看到通知，说明通知权限正常', '🧪');
+}
+
+/* ---------------- 界面渲染 ---------------- */
+function renderBell() {
+  const id = localStorage.getItem('fd_push_sub');
+  const mine = id && state.data.subs.find(s => s.id === id);
+  $('bell').classList.toggle('on', !!mine);
+  $('bellState').textContent = mine ? '已开启 · 手机系统会自动提醒' : '未开启 · 点下面开启';
+  $('enableBtn').hidden = !!mine;
+  $('disableBtn').hidden = !mine;
+  $('testBtn').hidden = !mine;
+  $('permPill').textContent = ('Notification' in window) ? ({ granted: '已允许', denied: '已拒绝', default: '待允许' }[Notification.permission] || '') : '不支持';
+  $('permPill').className = 'pill ' + (('Notification' in window) && Notification.permission === 'granted' ? 'ok' : '');
+  // 手机已装成 App 且通知已允许 → iPhone 提示卡片就不用再显示了
+  const ready = isStandalone() && ('Notification' in window) && Notification.permission === 'granted';
+  $('iosCard').classList.toggle('hide', ready);
+  if (!isSecure()) $('insecureCard').classList.remove('hide');
+  if (!API) $('notDeployedCard').classList.remove('hide');
+}
+
+function renderSync() {
+  if (state.token) {
+    $('syncState').textContent = `已连接 ${repoPath || '（未配置仓库）'}`;
+    $('syncState').className = 'pill ok';
+    $('syncBtn').textContent = '重新同步';
+  } else {
+    $('syncState').textContent = '未连接（本机预览）';
+    $('syncState').className = 'pill';
+    $('syncBtn').textContent = '连接仓库';
+  }
+}
+
+function renderSchedule() {
+  const p = state.data.prefs;
+  $('onSwitch').checked = p.enabled !== false;
+  $('nameSwitch').checked = p.nameBad !== false;
+  const meals = ['🌅 早饭', '☀️ 午饭', '🌙 晚饭'];
+  $('times').innerHTML = meals.map((m, i) => `
+    <div class="time-row">
+      <span class="meal">${m}</span>
+      <input type="time" data-t="${i}" value="${p.times[i]}">
+      <span class="hint" id="days-${i}"></span>
+    </div>`).join('');
+  $('times').querySelectorAll('input[type=time]').forEach(inp => {
+    inp.addEventListener('change', () => {
+      const i = Number(inp.dataset.t);
+      if (!inp.value) return;
+      state.data.prefs.times[i] = inp.value;
+      savePrefs('改饭点时间');
+    });
+  });
+  ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'].forEach((d, i) => {
+    const el = $('day-' + d);
+    el.classList.toggle('on', (p.days || [0, 1, 2, 3, 4, 5, 6]).includes(i));
+  });
+  const win = $('windowSeg').querySelectorAll('button');
+  win.forEach(b => b.classList.toggle('on', Number(b.dataset.win) === p.window));
+}
+
+function renderWire() {
+  const today = todayKey();
+  const fired = state.data.fired || {};
+  const sent = [0, 1, 2].some(i => fired[`${today}|${i}`]);
+  createWire($('wire'), { sent: sent });
+}
+
+function renderTheme() {
+  const t = state.data.prefs.theme || 'terracotta';
+  document.documentElement.setAttribute('data-theme', t);
+  document.querySelectorAll('#themes button').forEach(b => b.classList.toggle('on', b.dataset.theme === t));
+  const meta = document.querySelector('meta[name=theme-color]');
+  if (meta) meta.setAttribute('content', getComputedStyle(document.documentElement).getPropertyValue('--bg').trim());
+}
+
+function renderSubs() {
+  const id = localStorage.getItem('fd_push_sub');
+  $('subsCount').textContent = `${state.data.subs.length} 台设备已登记`;
+  $('subsList').innerHTML = state.data.subs.length ? state.data.subs.map((s, i) => {
+    const isMine = s.id === id;
+    return `<div class="sub ${isMine ? 'mine' : ''}">
+      <div><b>${isMine ? '📱 这台手机' : '🖥 其他设备'}</b><div class="hint">${new Date(s.created || Date.now()).toLocaleDateString()} 登记${s.test ? ' · 有测试待发' : ''}</div></div>
+      <button class="x" data-del="${i}" aria-label="移除">×</button>
+    </div>`;
+  }).join('') : '<div class="empty">还没有设备</div>';
+  $('subsList').querySelectorAll('button[data-del]').forEach(b => b.addEventListener('click', () => {
+    state.data.subs.splice(Number(b.dataset.del), 1);
+    savePrefs('移除设备');
+  }));
+}
+
+function renderAll() {
+  renderBell();
+  renderSync();
+  renderSchedule();
+  renderTheme();
+  renderSubs();
+  renderWire();
+}
+async function savePrefs(what) {
+  try {
+    await writeRemote(what || '改设置');
+    toast('已同步 ✓', '☁️');
+  } catch (e) {
+    showUnlock(String(e.message || e));
+  }
+  renderAll();
+}
+
+/* ---------------- 解锁 / iOS 提示 ---------------- */
+function showUnlock(msg) {
+  $('unlockCard').classList.remove('hide');
+  $('unlockMsg').textContent = msg || '云同步需要一次 GitHub Token（只保存在本机），之后不再打扰。';
+  renderSync();
+}
+function showIOS() {
+  $('unlockSheet').classList.add('show');
+  $('iosTitle').textContent = 'iPhone 需要先「添加到主屏幕」';
+  $('iosSteps').innerHTML = `
+    <li>用 Safari 打开本页 → 点底部「分享」→ 选「添加到主屏幕」。</li>
+    <li>从桌面图标打开本页（不是 Safari 里）。</li>
+    <li>再点「开启推送」并允许通知。</li>
+    <li>之后就算 App 完全关掉、锁屏，到饭点也会弹通知（需 iOS 16.4 及以上）。</li>`;
+  $('unlockSheet').classList.remove('hide');
+  $('iosCard').classList.remove('hide');
+}
+
+/* ---------------- 启动 ---------------- */
+async function init() {
+  state.token = localStorage.getItem('fd_push_token') || '';
+  renderTheme();
+
+  if ('serviceWorker' in navigator && isSecure()) {
+    try { await navigator.serviceWorker.register('sw.js'); } catch (e) { console.warn(e); }
   }
 
-  /* ---------- 铁线与提醒区 ---------- */
-  .hero { margin-top: 14px; display: grid; grid-template-columns: 132px 1fr; gap: 14px; align-items: stretch;
-          background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 14px;
-          box-shadow: 0 12px 30px rgba(60, 40, 25, .07); overflow: hidden; }
-  [data-theme="night"] .hero { box-shadow: 0 12px 30px rgba(0, 0, 0, .35); }
-  #wire { position: relative; min-height: 410px; border-radius: 16px;
-          background: linear-gradient(160deg, color-mix(in srgb, var(--accent) 7%, transparent), transparent 60%),
-                      repeating-linear-gradient(var(--line) 0 1px, transparent 1px 18px);
-          background-size: auto, 100% 18px; }
-  .wire-svg { display: block; width: 100%; height: auto; color: var(--dot); overflow: visible; }
-  .wire-line { fill: none; stroke: var(--wire); stroke-width: 2.2; stroke-linecap: round; stroke-dasharray: 640;
-               animation: draw 2.6s ease forwards; }
-  @keyframes draw { from { stroke-dashoffset: 640; } to { stroke-dashoffset: 0; } }
-  .wire-glow {
-    offset-path: path('M 26 18 C 150 16, 34 120, 104 132 S 246 160, 232 208 S 60 282, 116 302 S 190 352, 150 404');
-    animation: travel 7s linear infinite; fill: var(--accent2); opacity: .9;
-    filter: drop-shadow(0 0 6px var(--accent2));
-  }
-  @keyframes travel { from { offset-distance: 0%; opacity: 0; } 8% { opacity: 1; } 92% { opacity: 1; } to { offset-distance: 100%; opacity: 0; } }
-  .wire-node { animation: pop .5s cubic-bezier(.2, 1.4, .4, 1) both; animation-delay: calc(.6s + var(--i) * .5s); transform-box: fill-box; transform-origin: center; }
-  @keyframes pop { from { opacity: 0; transform: scale(.3); } to { opacity: 1; transform: scale(1); } }
-  .node-dot { fill: var(--dot); filter: drop-shadow(0 2px 3px rgba(0,0,0,.18)); }
-  .node-halo { fill: none; stroke: var(--dot); stroke-width: 1.5; opacity: .35; }
-  .node-label { font-size: 13px; font-weight: 700; fill: var(--ink); }
-  .node-time { font-size: 12px; fill: var(--muted); font-variant-numeric: tabular-nums; }
-  .wire-bubble { animation: rose .6s cubic-bezier(.2, 1.5, .4, 1) both; animation-delay: calc(1.8s + var(--i) * .4s); transform-box: fill-box; transform-origin: center; }
-  @keyframes rose { from { opacity: 0; translate: 0 8px; scale: .6; } to { opacity: 1; translate: 0 0; scale: 1; } }
-  .bubble-bg { fill: var(--ok-soft); stroke: var(--ok); stroke-width: 1; }
-  .bubble-text { font-size: 10.5px; font-weight: 600; fill: var(--ok); }
-  .wire-caption { position: absolute; left: 8px; right: 8px; bottom: 8px; background: color-mix(in srgb, var(--card) 88%, transparent);
-                  border: 1px solid var(--line); border-radius: 12px; padding: 7px 9px; font-size: 11px; line-height: 1.45;
-                  display: grid; gap: 2px; backdrop-filter: blur(6px); }
-  .wire-caption b { color: var(--accent); font-size: 11.5px; }
-  .wire-caption span { color: var(--muted); }
+  try { await readRemote(); } catch (e) { showUnlock('读取云端设置失败：' + e.message); renderAll(); }
+  renderAll();
 
-  .hero-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-  .hero-main h2 { margin: 0; font-size: 17px; line-height: 1.35; }
-  .hero-main p { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.6; }
-  .bell-row { display: flex; align-items: center; gap: 10px; margin-top: 2px; }
-  .bell { width: 42px; height: 42px; flex: none; border-radius: 50%; display: grid; place-items: center; font-size: 20px;
-          background: var(--accent-soft); color: var(--accent); position: relative; }
-  .bell.on { background: var(--ok-soft); color: var(--ok); }
-  .bell.on::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid var(--ok); opacity: .5;
-                    animation: ring 1.8s ease-out infinite; }
-  @keyframes ring { from { transform: scale(.9); opacity: .7; } to { transform: scale(1.35); opacity: 0; } }
-  .bell-row .txt { font-size: 12.5px; font-weight: 600; }
-  .bell-row .txt small { display: block; font-weight: 400; color: var(--muted); margin-top: 2px; }
+  // 订阅按钮
+  $('enableBtn').addEventListener('click', () => withSpinner($('enableBtn'), '正在开启…', enablePush));
+  $('disableBtn').addEventListener('click', () => withSpinner($('disableBtn'), '正在关闭…', disablePush));
+  $('testBtn').addEventListener('click', sendLocalTest);
+  $('webPushTestBtn').addEventListener('click', () => withSpinner($('webPushTestBtn'), '排队中…', async () => { testWebPush(); }));
 
-  /* ---------- 按钮 / 控件 ---------- */
-  .btn { width: 100%; border: 0; border-radius: 16px; padding: 14px; font: inherit; font-weight: 700; font-size: 15px;
-         cursor: pointer; margin-top: 8px; transition: transform .12s ease, box-shadow .2s ease; }
-  .btn:active { transform: scale(.98); }
-  .btn.primary { color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent2));
-                 box-shadow: 0 10px 22px color-mix(in srgb, var(--accent) 38%, transparent); }
-  .btn.ghost { color: var(--ink); background: color-mix(in srgb, var(--card) 70%, transparent); border: 1px solid var(--line); }
-  .btn[hidden] { display: none; }
-  .btn:disabled { opacity: .65; }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .grid2 .btn { margin-top: 0; }
+  // 同步
+  $('syncBtn').addEventListener('click', () => showUnlock());
+  $('saveToken').addEventListener('click', async () => {
+    const t = $('tokenInput').value.trim();
+    if (!t) return;
+    state.token = t;
+    localStorage.setItem('fd_push_token', t);
+    try {
+      await writeRemote('连接仓库');
+      $('unlockCard').classList.add('hide');
+      toast('连接成功，以后自动同步 ✓', '☁️');
+      renderAll();
+    } catch (e) { $('unlockMsg').textContent = '连接失败：' + String(e.message || e); }
+  });
 
-  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px dashed var(--line); }
-  .row:last-child { border-bottom: 0; }
-  .row .label { font-size: 13.5px; font-weight: 600; }
-  .row .hint, .hint { font-size: 11.5px; color: var(--muted); margin-top: 3px; line-height: 1.4; }
+  // 开关
+  $('onSwitch').addEventListener('change', e => { state.data.prefs.enabled = e.target.checked; savePrefs(e.target.checked ? '开启提醒' : '暂停提醒'); });
+  $('windowSeg').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    state.data.prefs.window = Number(b.dataset.win); savePrefs('改提醒持续时长');
+  });
+  document.querySelectorAll('.days').forEach(row => row.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    const d = Number(b.dataset.day);
+    const p = state.data.prefs;
+    p.days = p.days || [0, 1, 2, 3, 4, 5, 6];
+    p.days = p.days.includes(d) ? p.days.filter(x => x !== d) : [...p.days, d].sort();
+    b.classList.toggle('on');
+    savePrefs('改提醒日');
+  }));
+  $('themes').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    state.data.prefs.theme = b.dataset.theme;
+    renderTheme();
+    savePrefs('更换主题');
+  });
+  $('nameSwitch').addEventListener('change', e => { state.data.prefs.nameBad = e.target.checked; savePrefs('改文案'); });
 
-  .switch { position: relative; width: 50px; height: 30px; flex: none; }
-  .switch input { position: absolute; opacity: 0; inset: 0; margin: 0; }
-  .switch i { position: absolute; inset: 0; border-radius: 30px; background: color-mix(in srgb, var(--muted) 35%, transparent); transition: .25s; }
-  .switch i::after { content: ""; position: absolute; width: 24px; height: 24px; left: 3px; top: 3px; border-radius: 50%; background: #fff;
-                     box-shadow: 0 2px 6px rgba(0,0,0,.2); transition: .25s; }
-  .switch input:checked + i { background: var(--accent); }
-  .switch input:checked + i::after { transform: translateX(20px); }
+  // iOS 提示
+  $('iosClose').addEventListener('click', () => $('unlockSheet').classList.remove('show'));
+  $('iosGotIt').addEventListener('click', () => $('unlockSheet').classList.remove('show'));
+  $('iosCardBtn').addEventListener('click', showIOS);
+  $('iosCard').classList.add('hide');
 
-  .time-row { display: grid; grid-template-columns: 1fr 118px; align-items: center; gap: 10px; padding: 8px 0; }
-  .time-row .meal { font-size: 13.5px; font-weight: 600; }
-  input[type=time] { font: inherit; font-size: 14px; width: 100%; padding: 10px; border-radius: 12px; border: 1px solid var(--line);
-                     background: color-mix(in srgb, var(--card) 60%, transparent); color: var(--ink); }
-  .days { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
-  .days button { font: inherit; font-size: 12px; border: 1px solid var(--line); background: transparent; color: var(--muted);
-                 border-radius: 10px; padding: 6px 10px; }
-  .days button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .seg { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
-  .seg button { font: inherit; font-size: 12.5px; border: 1px solid var(--line); background: transparent; color: var(--ink);
-                border-radius: 999px; padding: 7px 12px; }
-  .seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  setInterval(() => { $('clock').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false }); }, 1000);
+  $('clock').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false });
 
-  .pill { font-size: 11px; padding: 3px 9px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; }
-  .pill.ok { background: var(--ok-soft); color: var(--ok); }
-  .empty { font-size: 12.5px; color: var(--muted); padding: 8px 0; text-align: center; }
+  // 回到前台时同步一次（可能别的设备改过）
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && API) readRemote().catch(() => {});
+  });
+}
 
-  .themes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-  .themes button { font: inherit; border: 2px solid transparent; border-radius: 16px; padding: 10px; background: transparent; color: var(--ink); font-size: 12px; text-align: center; }
-  .themes button .sw { display: block; height: 42px; border-radius: 12px; margin-bottom: 7px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.06); }
-  .themes button.on { border-color: var(--accent); }
-  .themes [data-theme="terracotta"] .sw { background: linear-gradient(135deg, #f5ece2, #de5b39); }
-  .themes [data-theme="mist"] .sw { background: linear-gradient(135deg, #eaf0ef, #2e8f83); }
-  .themes [data-theme="night"] .sw { background: linear-gradient(135deg, #161b22, #ffb454); }
+function withSpinner(btn, label, fn) {
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = label;
+  Promise.resolve().then(fn).catch(e => { toast(String(e.message || e), '⚠️'); }).finally(() => { btn.disabled = false; btn.textContent = old; });
+}
 
-  .sub { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-radius: 14px;
-         border: 1px solid var(--line); margin-bottom: 8px; font-size: 13px; }
-  .sub.mine { background: var(--ok-soft); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
-  .x { font: inherit; border: 0; width: 30px; height: 30px; border-radius: 50%; background: transparent; color: var(--muted); font-size: 20px; }
-  .x:active { background: var(--accent-soft); color: var(--accent); }
-
-  .hide { display: none !important; }
-  .callout { border-radius: 16px; padding: 12px 14px; font-size: 12.5px; line-height: 1.65; margin-top: 12px;
-             background: var(--accent-soft); border: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent); }
-  .callout b { color: var(--accent); }
-  .callout .btn { margin-top: 10px; }
-  .warn { background: #fff3d6; border-color: #f0c36a; color: #6b4a12; }
-  [data-theme="night"] .warn { background: #33291a; color: #ffd9a0; border-color: #7a5f2c; }
-
-  .unlock { margin-top: 10px; display: grid; gap: 8px; }
-  .unlock input { font: inherit; font-size: 13px; padding: 12px; border-radius: 12px; border: 1px solid var(--line);
-                  background: color-mix(in srgb, var(--card) 60%, transparent); color: var(--ink); }
-  .steps { margin: 8px 0 0; padding-left: 18px; font-size: 12.5px; line-height: 1.8; color: var(--muted); }
-  .steps b { color: var(--ink); }
-
-  footer { text-align: center; color: var(--muted); font-size: 11.5px; line-height: 1.7; margin-top: 20px; }
-
-  /* ---------- 提示与弹层 ---------- */
-  .toast {
-    position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom)); transform: translate(-50%, 16px);
-    display: flex; gap: 8px; align-items: center; background: var(--ink); color: var(--card);
-    padding: 11px 16px; border-radius: 14px; font-size: 13px; max-width: 88vw; opacity: 0; pointer-events: none;
-    transition: .25s ease; z-index: 60; box-shadow: 0 12px 30px rgba(0,0,0,.25);
-  }
-  .toast.show { opacity: 1; transform: translate(-50%, 0); }
-  .sheet { position: fixed; inset: 0; background: rgba(20, 14, 10, .5); display: none; align-items: flex-end; z-index: 70; backdrop-filter: blur(3px); }
-  .sheet.show { display: flex; }
-  .sheet .box { width: 100%; max-height: 86vh; overflow: auto; background: var(--card); color: var(--ink);
-                border-radius: 24px 24px 0 0; padding: 20px 18px calc(20px + env(safe-area-inset-bottom));
-                animation: up .28s cubic-bezier(.2, 1.2, .4, 1); }
-  @keyframes up { from { transform: translateY(40px); opacity: .5; } to { transform: none; opacity: 1; } }
-  .sheet .box h3 { margin: 0 0 10px; font-size: 17px; }
-
-  @media (max-width: 380px) {
-    .hero { grid-template-columns: 108px 1fr; gap: 10px; }
-    #wire { min-height: 340px; }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    *, *::before, *::after { animation: none !important; transition: none !important; }
-  }
-</style>
-</head>
-<body>
-<div class="wrap">
-
-  <header class="brand">
-    <div class="brand-mark">🪢</div>
-    <div>
-      <h1>铁线饭点</h1>
-      <p>到点，手机自己响</p>
-    </div>
-    <span class="clock" id="clock">--:--:--</span>
-  </header>
-
-  <!-- 主视觉 -->
-  <section class="hero">
-    <div id="wire" aria-hidden="false"></div>
-    <div class="hero-main">
-      <h2 id="heroTitle">把提醒交给手机</h2>
-      <p id="heroDesc">开启后，到点由服务器直接推到手机系统通知栏：锁屏、清后台、关了页面、重启手机都照常响。</p>
-      <div class="bell-row">
-        <div class="bell" id="bell">🔔</div>
-        <div class="txt">
-          <span id="permPill" class="pill">检查中</span>
-          <small id="bellState">未开启 · 点下面开启</small>
-        </div>
-      </div>
-      <button class="btn primary" id="enableBtn">开启推送（到点自己响）</button>
-      <button class="btn ghost" id="disableBtn" hidden>关闭推送</button>
-      <div class="grid2">
-        <button class="btn ghost" id="testBtn" hidden>本机测试通知</button>
-        <button class="btn ghost" id="webPushTestBtn" hidden>测试真推送</button>
-      </div>
-    </div>
-  </section>
-
-  <div class="callout hide" id="iosCard">
-    <b>iPhone：先添加到主屏幕再开推送</b>
-    <div class="hint" style="margin-top:4px">iOS 16.4 起支持网页推送，但必须在主屏幕 App 里开启。</div>
-    <button class="btn ghost" id="iosCardBtn">看步骤</button>
-  </div>
-  <div class="callout warn hide" id="insecureCard">
-    <b>当前不是 https 地址</b>
-    <div class="hint" style="margin-top:4px">本地预览时推送不可用；部署到 GitHub Pages 后再开启。</div>
-  </div>
-  <div class="callout warn hide" id="notDeployedCard">
-    <b>还没配置仓库路径</b>
-    <div class="hint" style="margin-top:4px">打开 config.json，把 yourname/your-repo 改成你的 GitHub 仓库，订阅才能同步到云端。</div>
-  </div>
-
-  <!-- 设置 -->
-  <section class="card">
-    <h2><span class="n">01</span>提醒节奏</h2>
-    <div class="row">
-      <div>
-        <div class="label">到点发消息提醒</div>
-        <div class="hint">主开关。关掉就再也不发</div>
-      </div>
-      <label class="switch"><input type="checkbox" id="onSwitch"><i></i></label>
-    </div>
-    <div class="row" style="align-items:flex-start">
-      <div style="flex:1">
-        <div class="label">三顿时间和提醒日</div>
-        <div class="hint">改完自动同步，服务器照新时间推送</div>
-        <div id="times"></div>
-        <div class="days">
-          <button data-day="1">一</button><button data-day="2">二</button><button data-day="3">三</button>
-          <button data-day="4">四</button><button data-day="5">五</button><button data-day="6">六</button>
-          <button data-day="0">日</button>
-        </div>
-      </div>
-    </div>
-    <div class="row" style="align-items:flex-start">
-      <div style="flex:1">
-        <div class="label">到点后持续提醒多久</div>
-        <div class="hint">没点通知的话，浏览器会在这段时间内每 30 分钟再追一次</div>
-        <div class="seg" id="windowSeg">
-          <button data-win="20">20 分钟</button>
-          <button data-win="60">1 小时</button>
-          <button data-win="90">1.5 小时</button>
-        </div>
-      </div>
-    </div>
-    <div class="row">
-      <div>
-        <div class="label">文案点名雷区</div>
-        <div class="hint">提醒里直说「薯片、虾条…别买」</div>
-      </div>
-      <label class="switch"><input type="checkbox" id="nameSwitch"><i></i></label>
-    </div>
-  </section>
-
-  <!-- 主题 -->
-  <section class="card">
-    <h2><span class="n">02</span>换身喜欢的颜色</h2>
-    <div class="themes" id="themes">
-      <button data-theme="terracotta"><span class="sw"></span>暖陶</button>
-      <button data-theme="mist"><span class="sw"></span>青雾</button>
-      <button data-theme="night"><span class="sw"></span>夜航</button>
-    </div>
-  </section>
-
-  <!-- 设备与同步 -->
-  <section class="card">
-    <h2><span class="n">03</span>设备与同步</h2>
-    <div class="row">
-      <div>
-        <div class="label">推送设备</div>
-        <div class="hint" id="subsCount">0 台设备已登记</div>
-      </div>
-      <span class="pill" id="syncState">未连接</span>
-    </div>
-    <div id="subsList"></div>
-    <button class="btn ghost" id="syncBtn">连接仓库</button>
-    <div id="unlockCard" class="unlock hide">
-      <div class="hint" id="unlockMsg">云同步需要一次 GitHub Token（只保存在本机），之后不再打扰。</div>
-      <input id="tokenInput" type="password" placeholder="粘贴 GitHub Token（只需一次）" autocomplete="off">
-      <button class="btn primary" id="saveToken">保存并同步</button>
-    </div>
-  </section>
-
-  <footer>
-    推送经手机系统的推送服务送达（不经过本网站常驻）<br>
-    除关机外都会响；想完全不收，关掉上面的总开关即可
-  </footer>
-</div>
-
-<div class="toast" id="toast"><span id="toastIcon">🍚</span><span id="toastText"></span></div>
-
-<div class="sheet" id="unlockSheet">
-  <div class="box">
-    <h3 id="iosTitle">iOS 设置步骤</h3>
-    <ol class="steps" id="iosSteps"></ol>
-    <button class="btn primary" id="iosGotIt">知道了</button>
-    <button class="btn ghost" id="iosClose">关闭</button>
-  </div>
-</div>
-
-<script src="wire.js"></script>
-<script src="app.js"></script>
-</body>
-</html>
+init();
