@@ -5,9 +5,10 @@
     window.createWire = function (host) { host.innerHTML = ''; };
   }
 })();
-const repoPath = (window.__FD_REPO__ || '').replace(/^\/+|\/+$/g, '');
+// 仓库名以 config.json 为准（window.__FD_REPO__ 只是兜底）
+let repoPath = (window.__FD_REPO__ || '').replace(/^\/+|\/+$/g, '');
 const DATA_PATH = 'data.json';
-const API = repoPath ? `https://api.github.com/repos/${repoPath}/contents/${DATA_PATH}` : '';
+let API = repoPath ? `https://api.github.com/repos/${repoPath}/contents/${DATA_PATH}` : '';
 
 const DEFAULTS = {
   subs: [],
@@ -28,6 +29,9 @@ const state = {
 
 /* ---------------- 工具 ---------------- */
 const $ = id => document.getElementById(id);
+function withTimeout(p, ms) {
+  return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('等待超时')), ms))]);
+}
 function b64uToBytes(b64u) {
   return Uint8Array.from(atob(b64u.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 }
@@ -68,9 +72,21 @@ function ghHeaders() {
   if (state.token) h.Authorization = `Bearer ${state.token}`;
   return h;
 }
+async function loadConfig() {
+  if (repoPath) return null;
+  try {
+    const cfg = await fetch('config.json', { cache: 'no-store' }).then(r => r.json());
+    repoPath = String(cfg.githubRepo || '').replace(/^\/+|\/+$/g, '');
+    if (repoPath) API = `https://api.github.com/repos/${repoPath}/contents/${DATA_PATH}`;
+    return cfg;
+  } catch (e) {
+    return null;
+  }
+}
 async function readRemote() {
+  await loadConfig();
   if (!API) { renderAll(); return; }
-  const r = await fetch(`${API}?t=${Date.now()}`, { headers: ghHeaders() });
+  const r = await fetch(`${API}?t=${Date.now()}`, { headers: ghHeaders(), cache: 'no-store' });
   if (r.status === 404) { state.data = clone(DEFAULTS); state.sha = null; renderAll(); return; }
   if (!r.ok) throw new Error(`读取 data.json 失败（${r.status}）`);
   const j = await r.json();
@@ -84,7 +100,8 @@ async function readRemote() {
   renderAll();
 }
 async function writeRemote(message = '更新订阅/设置') {
-  if (!API) throw new Error('还没配置仓库路径');
+  await loadConfig();
+  if (!API) throw new Error('还没配置仓库路径（config.json 里的 githubRepo）');
   if (!state.token) throw new Error('需要 GitHub Token 才能写入（点「连接仓库」）');
   if (state.busy) throw new Error('正在同步，请稍等');
   state.busy = true;
@@ -100,7 +117,8 @@ async function writeRemote(message = '更新订阅/设置') {
     const r = await fetch(API, { method: 'PUT', headers: ghHeaders(), body: JSON.stringify(body) });
     if (!r.ok) {
       const j = await r.json().catch(() => ({}));
-      throw new Error(`写入失败（${r.status}${j.message ? ' ' + j.message : ''}）`);
+      const hint = r.status === 401 ? '令牌无效或已过期' : r.status === 403 ? '令牌没有 repo 权限，或权限不足' : r.status === 409 ? '文件刚被别人改过，请再点一次' : '';
+      throw new Error(`写入失败（${r.status}${hint ? '：' + hint : ''}${j.message ? ' · ' + j.message : ''}）`);
     }
     const j = await r.json();
     state.sha = j.content && j.content.sha;
@@ -123,11 +141,19 @@ function mySub() {
   if (!mine) return null;
   return state.data.subs.find(s => s.id === mine) || null;
 }
+/* 最近一次订阅错误，界面上可以原样显示出来，方便排查 */
+let lastSubError = '';
+
 async function enablePush() {
   if (!isSecure()) { toast('请用 https 地址打开，file:// 无法收推送', '⚠️'); return; }
-  const cfg = await fetch('config.json', { cache: 'no-store' }).then(r => r.json()).catch(() => ({}));
-  if (!cfg.githubRepo || !cfg.vapidPublicKey) {
-    toast('还没配置仓库和推送密钥，先看 部署步骤.md 第 2 步', '⚠️');
+  const cfg = (await loadConfig()) || { githubRepo: repoPath };
+  let vapid = cfg.vapidPublicKey;
+  if (!vapid) {
+    const again = await fetch('config.json', { cache: 'no-store' }).then(r => r.json()).catch(() => ({}));
+    vapid = again.vapidPublicKey;
+  }
+  if (!repoPath || !vapid) {
+    toast('还没配置仓库和推送密钥', '⚠️');
     $('notDeployedCard').classList.remove('hide');
     return;
   }
@@ -136,23 +162,49 @@ async function enablePush() {
     return;
   }
   if (!('Notification' in window)) { toast('这个浏览器不支持通知', '⚠️'); return; }
+  // 先确保 Service Worker 就绪（手机首次打开时它可能还在安装）
+  let reg = null;
+  try {
+    reg = await withTimeout(navigator.serviceWorker.ready, 8000);
+  } catch (e) {
+    try { await navigator.serviceWorker.register('sw.js'); reg = await withTimeout(navigator.serviceWorker.ready, 8000); }
+    catch (e2) { lastSubError = 'Service Worker 未就绪：' + (e2.message || e2); }
+  }
+  if (!reg || !reg.pushManager) {
+    lastSubError = lastSubError || 'Service Worker 未就绪，请刷新页面重试';
+    showSubError();
+    return;
+  }
+  // 再申请通知权限（必须在点了按钮之后、用户手势里调用）
   const perm = await Notification.requestPermission();
   if (perm !== 'granted') { toast('通知被拒绝了，请到浏览器设置里允许本站通知', '⚠️'); return; }
+  const reg2 = reg;
+  if (!reg2 || !reg2.pushManager) {
+    lastSubError = '浏览器不支持推送（缺少 pushManager）';
+    showSubError();
+    return;
+  }
 
-  const reg = await navigator.serviceWorker.ready;
-  let sub = await reg.pushManager.getSubscription();
+  let sub = await reg2.pushManager.getSubscription();
   if (!sub) {
-    const cleaned = cfg.vapidPublicKey.replace(/=+$/, '');
+    const cleaned = String(vapid).replace(/=+$/, '');
     try {
-      sub = await reg.pushManager.subscribe({
+      sub = await reg2.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: b64uToBytes(cleaned)
       });
     } catch (e) {
-      // 换了公钥：旧订阅失效，退订后重来
-      const old = await reg.pushManager.getSubscription();
-      if (old) { await old.unsubscribe(); }
-      sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(cleaned) });
+      lastSubError = '订阅失败：' + (e.message || e);
+      try {
+        const old = await reg2.pushManager.getSubscription();
+        if (old) await old.unsubscribe();
+        sub = await reg2.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(cleaned) });
+        lastSubError = '';
+      } catch (e2) {
+        lastSubError += ' / 重试：' + (e2.message || e2);
+        showSubError();
+        return;
+      }
     }
   }
   const j = sub.toJSON();
@@ -168,15 +220,36 @@ async function enablePush() {
   state.data.subs = state.data.subs.filter(s => s.id !== rec.id && s.endpoint !== rec.endpoint);
   state.data.subs.push(rec);
   localStorage.setItem('fd_push_sub', rec.id);
+  lastSubError = '';
+
+  // 先叫用户在本机点一下确认通知可用（跟云端无关）
+  try {
+    await (reg2.showNotification ? reg2.showNotification('🔔 已开启推送', {
+      body: '这是本机测试。到饭点会像这样提醒你：午饭别吃膨化、别吃涨肚。',
+      tag: 'fan-dian-enabled',
+      icon: 'icon-192.png',
+      badge: 'badge-72.png',
+      vibrate: [150, 60, 150]
+    }) : Promise.resolve());
+  } catch (e) {}
+  renderAll();
+  toast('本机通知已开启，正在上传到云端…', '🔔');
+
   try {
     await writeRemote('登记推送订阅');
+    renderAll();
+    toast('云端也登记好了！点「测试真推送」验证', '🎉');
   } catch (e) {
     showUnlock(String(e.message || e));
     renderAll();
-    return;
   }
-  renderAll();
-  toast('已开启！到饭点手机会自己响', '🔔');
+}
+
+function showSubError() {
+  lastSubError = lastSubError || '';
+  $('subError').textContent = lastSubError;
+  $('subError').classList.toggle('hide', !lastSubError);
+  if (lastSubError) toast('开启推送失败：' + lastSubError.slice(0, 80), '⚠️');
 }
 
 async function disablePush() {
@@ -198,9 +271,19 @@ function testWebPush() {
   const id = localStorage.getItem('fd_push_sub');
   const sub = id && state.data.subs.find(s => s.id === id);
   if (!sub) { toast('请先开启推送', '⚠️'); return; }
-  // GitHub Actions 5 分钟内会看到 test 标记并立即推送
   sub.test = Date.now();
-  writeRemote('测试推送').then(() => toast('测试已排队，5 分钟内到达', '🧪')).catch(e => showUnlock(String(e.message || e)));
+  // 保存到云端的“测试标记”，GitHub Actions 5 分钟内会看到它并立刻推一条测试
+  writeRemote('测试推送')
+    .then(() => {
+      toast('测试已排队，5 分钟内到达（可直接锁屏看）', '🧪');
+      $('subError').textContent = '';
+      $('subError').classList.add('hide');
+    })
+    .catch(e => {
+      $('subError').textContent = '测试推送登记失败：' + (e.message || e);
+      $('subError').classList.remove('hide');
+      showUnlock(String(e.message || e));
+    });
 }
 
 async function sendLocalTest() {
@@ -345,12 +428,19 @@ function showIOS() {
 async function init() {
   state.token = localStorage.getItem('fd_push_token') || '';
   renderTheme();
+  if (state.token) state.unlocked = true;
+  // 先把当前仓库名读出来（config.json），后面所有按钮才能工作
+  try { await loadConfig(); } catch (e) {}
 
   if ('serviceWorker' in navigator && isSecure()) {
     try { await navigator.serviceWorker.register('sw.js'); } catch (e) { console.warn(e); }
   }
 
-  try { await readRemote(); } catch (e) { showUnlock('读取云端设置失败：' + e.message); renderAll(); }
+  // 读取云端设置失败不应阻塞界面
+  try { await withTimeout(readRemote(), 10000); } catch (e) {
+    $('subError').textContent = '读取云端设置失败：' + (e.message || e) + '（不影响手机通知）';
+    $('subError').classList.remove('hide');
+  }
   renderAll();
 
   // 订阅按钮
@@ -361,17 +451,45 @@ async function init() {
 
   // 同步
   $('syncBtn').addEventListener('click', () => showUnlock());
+  async function checkToken(t) {
+    // 只验证令牌身份，不写任何文件
+    const r = await fetch('https://api.github.com/user', {
+      headers: { Authorization: `Bearer ${t}`, Accept: 'application/vnd.github+json' }
+    });
+    if (r.status === 401) throw new Error('令牌无效或已过期（401），请重新生成');
+    if (!r.ok) throw new Error('检查令牌失败（' + r.status + '）');
+    const j = await r.json().catch(() => ({}));
+    return j.login || '';
+  }
+  $('testTokenBtn').addEventListener('click', async () => {
+    const t = $('tokenInput').value.trim();
+    if (!t) { $('unlockMsg').textContent = '请先在上面的框里粘贴令牌'; return; }
+    if (!/^gh[ps]_/.test(t)) { $('unlockMsg').textContent = '这串看着不像 GitHub 令牌（应该以 ghp_ 或 ghs_ 开头）'; return; }
+    try {
+      const who = await checkToken(t);
+      $('unlockMsg').textContent = '✅ 令牌有效' + (who ? '，属于账号 ' + who : '') + '。现在点「保存并同步」即可。';
+    } catch (e) { $('unlockMsg').textContent = '❌ ' + (e.message || e); }
+  });
   $('saveToken').addEventListener('click', async () => {
     const t = $('tokenInput').value.trim();
-    if (!t) return;
+    if (!t) { $('unlockMsg').textContent = '请先在上面的框里粘贴令牌'; return; }
+    if (!/^gh[ps]_/.test(t)) { $('unlockMsg').textContent = '这串看着不像 GitHub 令牌（应该以 ghp_ 或 ghs_ 开头）'; return; }
+    const btn = $('saveToken');
+    btn.disabled = true; const oldLabel = btn.textContent; btn.textContent = '正在同步…';
     state.token = t;
-    localStorage.setItem('fd_push_token', t);
     try {
+      await checkToken(t);
       await writeRemote('连接仓库');
+      localStorage.setItem('fd_push_token', t);
       $('unlockCard').classList.add('hide');
+      $('subError').classList.add('hide');
       toast('连接成功，以后自动同步 ✓', '☁️');
+    } catch (e) {
+      $('unlockMsg').textContent = '❌ 同步失败：' + String(e.message || e) + '（令牌先不保存，修好后重试）';
+    } finally {
+      btn.disabled = false; btn.textContent = oldLabel;
       renderAll();
-    } catch (e) { $('unlockMsg').textContent = '连接失败：' + String(e.message || e); }
+    }
   });
 
   // 开关

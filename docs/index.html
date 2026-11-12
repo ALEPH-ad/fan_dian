@@ -248,6 +248,7 @@
         <button class="btn ghost" id="testBtn" hidden>本机测试通知</button>
         <button class="btn ghost" id="webPushTestBtn" hidden>测试真推送</button>
       </div>
+      <div class="callout warn hide" id="subError"></div>
     </div>
   </section>
 
@@ -333,6 +334,7 @@
       <div class="hint" id="unlockMsg">云同步需要一次 GitHub Token（只保存在本机），之后不再打扰。</div>
       <input id="tokenInput" type="password" placeholder="粘贴 GitHub Token（只需一次）" autocomplete="off">
       <button class="btn primary" id="saveToken">保存并同步</button>
+      <button class="btn ghost" id="testTokenBtn">先检查令牌能不能用</button>
     </div>
   </section>
 
