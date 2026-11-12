@@ -92,3 +92,7 @@ function caption(host, opts) {
     : `<b>铁丝正在路上</b><span>下一条：${next.label} ${next.time} · 到点手机会自己响</span>`;
   return box;
 }
+
+// 供 app.js（普通脚本）使用
+window.createWire = createWire;
+

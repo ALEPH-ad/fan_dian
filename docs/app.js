@@ -1,5 +1,10 @@
-import { createWire } from './wire.js';
-
+// 说明：wire.js 已通过 <script> 先加载，它也把同名函数挂到了 window 上。
+// 两个文件都是全局脚本，所以这里不能再声明 createWire，否则会冲突。
+(function () {
+  if (typeof window.createWire !== 'function') {
+    window.createWire = function (host) { host.innerHTML = ''; };
+  }
+})();
 const repoPath = (window.__FD_REPO__ || '').replace(/^\/+|\/+$/g, '');
 const DATA_PATH = 'data.json';
 const API = repoPath ? `https://api.github.com/repos/${repoPath}/contents/${DATA_PATH}` : '';
@@ -10,8 +15,11 @@ const DEFAULTS = {
   fired: {}
 };
 
+// 兼容老版本浏览器（structuredClone 在旧版里没有）
+const clone = (obj) => JSON.parse(JSON.stringify(obj));
+
 const state = {
-  data: structuredClone(DEFAULTS),
+  data: clone(DEFAULTS),
   sha: null,
   token: '',
   unlocked: false,
@@ -63,13 +71,13 @@ function ghHeaders() {
 async function readRemote() {
   if (!API) { renderAll(); return; }
   const r = await fetch(`${API}?t=${Date.now()}`, { headers: ghHeaders() });
-  if (r.status === 404) { state.data = structuredClone(DEFAULTS); state.sha = null; renderAll(); return; }
+  if (r.status === 404) { state.data = clone(DEFAULTS); state.sha = null; renderAll(); return; }
   if (!r.ok) throw new Error(`读取 data.json 失败（${r.status}）`);
   const j = await r.json();
   let data;
-  try { data = JSON.parse(decodeURIComponent(escape(atob(j.content.replace(/\s/g, ''))))); } catch { data = structuredClone(DEFAULTS); }
+  try { data = JSON.parse(decodeURIComponent(escape(atob(j.content.replace(/\s/g, ''))))); } catch { data = clone(DEFAULTS); }
   data.subs = data.subs || [];
-  data.prefs = Object.assign(structuredClone(DEFAULTS.prefs), data.prefs || {});
+  data.prefs = Object.assign(clone(DEFAULTS.prefs), data.prefs || {});
   data.fired = data.fired || {};
   state.data = data;
   state.sha = j.sha;
