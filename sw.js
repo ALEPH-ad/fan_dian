@@ -1,5 +1,5 @@
-/* 铁线饭点 Service Worker：接收服务器推送、显示通知 */
-const CACHE = 'tie-xian-v3';
+/* 铁线饭点 Service Worker：接收服务器推送、显示通知、离线缓存 */
+const CACHE = 'tie-xian-v5';
 const ASSETS = ['./', './index.html', './app.js', './wire.js', './manifest.json', './icon-192.png', './badge-72.png'];
 
 self.addEventListener('install', e => {
@@ -44,40 +44,65 @@ self.addEventListener('push', e => {
   try { data = e.data ? e.data.json() : {}; } catch { data = { title: '饭点提醒', body: e.data ? e.data.text() : '' }; }
   const title = data.title || '🍚 到饭点啦';
   const body = data.body || '该吃饭了，别碰膨化、别吃太涨肚。';
+  const late = /饭点过了|还没吃|过了一阵/.test(title) || !!data.late;
+
+  // 关掉「只靠系统通知」的死路：通知一定要弹，且尽量常驻
   const options = {
     body,
     tag: data.tag || 'fan-dian',
     renotify: true,
-    requireInteraction: true,      // 别让它自己悄悄消失
+    requireInteraction: true,      // 别让它自己悄悄消失，要用户处理
+    silent: false,
     icon: './icon-192.png',
     badge: './badge-72.png',
-    vibrate: [180, 80, 180, 80, 360, 120, 420],
+    vibrate: [200, 90, 200, 90, 360, 140, 440],
     timestamp: data.ts || Date.now(),
     lang: 'zh-CN',
-    data: { url: data.url || './', meal: data.meal || '', ts: data.ts || Date.now() },
+    data: { url: data.url || './', meal: data.meal || '', late, ts: data.ts || Date.now() },
     actions: [
       { action: 'open', title: '看提醒' },
       { action: 'ok', title: '我要去吃了' }
     ]
   };
-  e.waitUntil(self.registration.showNotification(title, options));
+
+  // 页面当前可见时：交给页面弹「小闹钟」窗口；不可见或没有页面：发系统通知
+  const showWindow = self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
+    const visible = clients.filter(c => c.visibilityState === 'visible');
+    if (visible.length) {
+      visible.forEach(c => c.postMessage({
+        type: 'meal-alert', meal: data.meal || 'lunch', title, body, late
+      }));
+      return true;
+    }
+    return false;
+  });
+
+  e.waitUntil(showWindow.then(visible => {
+    if (visible) return undefined;
+    return self.registration.showNotification(title, options);
+  }).catch(() => self.registration.showNotification(title, options)));
 });
 
 /* ---------- 点通知 ---------- */
 self.addEventListener('notificationclick', e => {
   e.notification.close();
   const data = e.notification.data || {};
-  const target = data.url || './';
+
+  // 「我要去吃了」：只记下来，不打开页面
   if (e.action === 'ok') {
-    // 记一笔「我吃过啦」，下次打开页面能看到
     e.waitUntil((async () => {
       try {
         const cache = await caches.open('tie-xian-state');
         await cache.put(new Request('/__fd_ack'), new Response(JSON.stringify({ ts: Date.now(), meal: data.meal })));
       } catch {}
+      // 给所有开着的页面发个消息，让页面记一笔
+      const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      wins.forEach(w => w.postMessage({ type: 'meal-done', meal: data.meal }));
     })());
     return;
   }
+
+  // 普通点击 / 「看提醒」：打开或聚焦页面
   e.waitUntil((async () => {
     try {
       const cache = await caches.open('tie-xian-state');
@@ -86,6 +111,6 @@ self.addEventListener('notificationclick', e => {
     const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     const hit = wins.find(w => w.url.startsWith(self.registration.scope));
     if (hit) { await hit.focus(); return; }
-    await self.clients.openWindow(target);
+    await self.clients.openWindow(data.url || './');
   })());
 });
