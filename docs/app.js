@@ -22,6 +22,59 @@
     lunch: { name: '午饭', ico: '☀️', text: '午饭吃七八分就好：肉和菜多一点，主食别过量。\n❌ 雷区：薯片、虾条、锅巴、爆米花、辣条、方便面 —— 会涨肚，别买。\n⚠️ 汽水、糯米、豆类少吃，吃完别马上躺。' },
     dinner: { name: '晚饭', ico: '🌙', text: '晚饭清淡一点，少油少盐，吃到舒服就放下筷子。\n🥗 睡前至少留 3 小时，吃完出去走两步。' }
   };
+
+  /* ---------------- 提醒文案库（每顿 4 份 + 开场/结尾，随机轮换） ---------------- */
+  var COPY = {
+    intros: ['肚子嘀嘀咕咕了，到饭点啦～', '该吃饭了，别硬扛～', '饭点到了，先照顾一下自己的胃吧。', '停一停手里的事，吃饭时间到咯。', '这个点你大概有点饿了，去吃点正经的。', '别让肚子空熬到下午，先吃口饭。'],
+    endings: ['乖乖吃顿正经饭，零食盒子先收起来～', '吃饱了心情会变好，去吧～', '慢慢吃，别着急，胃会感谢你。', '吃完记得喝点温水。'],
+    meals: {
+      breakfast: [
+        { title: '🌅 早饭时间', body: '温热的垫一垫：粥、蒸蛋、半个包子就够。\n🍞 别拿饼干和膨化食品凑合，越吃越饿。' },
+        { title: '🌅 早饭时间 · 别空腹', body: '空腹先别灌汽水，对胃不好。\n🥚 先吃点蛋白质，一上午都有精神。' },
+        { title: '🌅 早饭时间 · 七分饱', body: '吃个七分饱，别撑。\n☕ 想要精神好，比咖啡更管用的是一个热乎早饭。' },
+        { title: '🌅 早饭时间 · 好好吃', body: '一口一口慢慢吃，别边走边塞。\n🍚 吃饱了，上午才有底气。' }
+      ],
+      lunch: [
+        { title: '☀️ 午饭时间 · 别吃膨化', body: '午饭七八分就好：肉和菜多一点，主食别过量。\n❌ 雷区：薯片、虾条、锅巴、爆米花、辣条、方便面 —— 会涨肚，别买。\n⚠️ 汽水、糯米、豆类少吃，吃完别马上躺。' },
+        { title: '☀️ 午饭时间 · 慢慢嚼', body: '吃慢点，嚼碎了再咽，肚子更好受。\n🥬 先吃几口青菜再动主食，饱得慢一点。\n🚫 零食留到下午再说，现在先吃饭。' },
+        { title: '☀️ 午饭时间 · 别用零食应付', body: '一顿正经午饭，抵得上一整袋零食。\n⚠️ 吃完渴了喝温水，别再开一罐汽水。\n🍱 吃饱就好，别撑到下午打瞌睡。' },
+        { title: '☀️ 午饭时间 · 七分饱', body: '筷子放下时应该还想再吃一点点，那就对了。\n❌ 膨化食品今天先放一放。\n🚶 吃完站起来走两步。' }
+      ],
+      dinner: [
+        { title: '🌙 晚饭时间 · 清淡少油', body: '晚饭清淡一点，少油少盐，吃到舒服就放下筷子。\n🥗 睡前至少留 3 小时，吃完出去走两步。' },
+        { title: '🌙 晚饭时间 · 别吃太撑', body: '晚上吃多了最容易涨肚子、睡不好。\n🍲 汤别喝太多，饭别添第二碗。\n🚶 吃完散散步，比躺沙发强。' },
+        { title: '🌙 晚饭时间 · 别碰夜宵零食', body: '晚饭好好吃，晚上就不会想找零食。\n❌ 薯片、汽水、辣条这顿都先收起来。\n🌙 睡前留出 3 小时，睡得踏实。' },
+        { title: '🌙 晚饭时间 · 好好收个尾', body: '一天最后一顿，吃得舒服最重要。\n🥦 菜多一点，油少一点。\n🍵 吃完喝杯温水，别急着躺下。' }
+      ]
+    },
+    late: [
+      { title: '⏰ 饭点过了一阵啦', body: '再拖下去容易饿到乱吃东西。\n现在去吃，还来得及。' },
+      { title: '⏰ 还没吃饭吗？', body: '饿狠了最容易一顿乱吃，先吃点正经的吧。' }
+    ],
+    remind: [
+      { title: '⏰ 再提醒一下', body: '刚刚那条看到了吗？饭还没吃的话，现在去。' },
+      { title: '🍚 还饿着吗？', body: '别硬扛，吃两口也好过一直饿着。' }
+    ],
+    summary: [
+      { title: '🌙 今天吃得怎么样', body: '如果今天没碰膨化、没吃太撑，给自己点个赞。\n明天早上还会准时叫你。' },
+      { title: '🌙 睡前小总结', body: '晚饭吃舒服了吗？肚子没胀就没白坚持。\n早点睡，明早见。' }
+    ],
+    nextMorning: [
+      { title: '🌅 明早 7:30 见', body: '今晚早睡一会儿，明早给你准备了一份早饭提醒。' }
+    ]
+  };
+  var lastCopy = {};
+  function pickCopy(meal) {
+    var pool = (COPY.meals[meal] || COPY.meals.lunch);
+    var idx = Math.floor(Math.random() * pool.length);
+    if (pool.length > 1 && idx === lastCopy[meal]) idx = (idx + 1) % pool.length;
+    lastCopy[meal] = idx;
+    var base = pool[idx];
+    var intro = COPY.intros[Math.floor(Math.random() * COPY.intros.length)];
+    var ending = COPY.endings[Math.floor(Math.random() * COPY.endings.length)];
+    return { title: base.title, body: intro + '\n' + base.body + '\n' + ending };
+  }
+  function pickAny(list) { return list[Math.floor(Math.random() * list.length)]; }
   function popLayer() {
     var layer = $('popLayer');
     if (layer) return layer;
@@ -97,23 +150,43 @@
     toast._last = p && p.el;
     return p;
   }
-  /* 闹钟式提醒弹窗 */
-  function alarmPopup(mealKey, late) {
+  /* 到点提醒：文案从库里随机抽一份（每次都不一样） */
+  function alarmPopup(mealKey, late, customCopy) {
     var m = MEALS[mealKey] || MEALS.lunch;
+    var cp = customCopy || (late ? pickAny(COPY.late) : pickCopy(mealKey));
     var now = new Date();
     var hm = pad(now.getHours()) + ':' + pad(now.getMinutes());
+    var icon = '🍚';
+    if (mealKey === 'breakfast') icon = '🌅';
+    if (mealKey === 'lunch') icon = '☀️';
+    if (mealKey === 'dinner') icon = '🌙';
+    if (late) icon = '⏰';
+    var dayName = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][now.getDay()];
     return popup({
       kind: 'alarm',
-      icon: late ? '⏰' : m.ico,
-      title: (late ? '饭点过了 · ' : '') + m.name + '时间',
-      sub: hm + ' · 该照顾一下胃了',
-      body: m.text,
+      icon: icon,
+      title: cp.title,
+      sub: dayName + ' ' + hm + ' · ' + (late ? '补发提醒' : '到点啦'),
+      body: cp.body,
       maxSeconds: 180,
+      onClose: function () { markSeen(mealKey); },
       actions: [
-        { label: '我要去吃', primary: true, fn: function () { toast('好，去吧 🍲', '🍲'); } },
-        { label: '10 分钟后再叫我', fn: function () { toast('10 分钟后我再提醒你', '⏰'); } },
-        { label: '别提醒了', fn: function () { toast('这次跳过', '🔕'); } }
+        { label: '我要去吃', primary: true, fn: function () { markDone(mealKey); toast('好，去吧 🍲', '🍲'); } },
+        { label: '10 分钟后再叫我', fn: function () { snoozePopup(mealKey); } },
+        { label: '别提醒了', fn: function () { markDone(mealKey); toast('这次跳过', '🔕'); } }
       ]
+    });
+  }
+  function infoPopup(cp, icon) {
+    var now = new Date();
+    return popup({
+      kind: 'alarm',
+      icon: icon || '✨',
+      title: cp.title,
+      sub: pad(now.getHours()) + ':' + pad(now.getMinutes()) + ' · 小提示',
+      body: cp.body,
+      maxSeconds: 120,
+      actions: [{ label: '知道了', primary: true }]
     });
   }
   function previewPopup() {
@@ -121,6 +194,146 @@
     var mins = now.getHours() * 60 + now.getMinutes();
     var key = mins < 10 * 60 + 30 ? 'breakfast' : (mins < 15 * 60 ? 'lunch' : 'dinner');
     alarmPopup(key, false);
+  }
+
+  /* ---------------- 手机端到点提醒（页面开着时也能响） ---------------- */
+  var KEY_LOG = 'fd_alert_log';   // 本地记录：哪天哪顿弹过、点过通知、点过要吃饭
+  function todayKey2(d) { d = d || new Date(); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+  function readLog() {
+    try { return JSON.parse(localStorage.getItem(KEY_LOG) || '{}'); } catch (e) { return {}; }
+  }
+  function writeLog(o) {
+    // 只保留最近两天，避免越存越大
+    var keys = Object.keys(o);
+    if (keys.length > 6) { keys.sort(); keys.slice(0, keys.length - 6).forEach(function (k) { delete o[k]; }); }
+    try { localStorage.setItem(KEY_LOG, JSON.stringify(o)); } catch (e) {}
+  }
+  function markSeen(meal) {
+    var log = readLog(), d = todayKey2();
+    log[d + '|' + meal] = Object.assign(log[d + '|' + meal] || {}, { seen: Date.now() });
+    writeLog(log);
+  }
+  function markDone(meal) {
+    var log = readLog(), d = todayKey2();
+    log[d + '|' + meal] = Object.assign(log[d + '|' + meal] || {}, { done: Date.now() });
+    writeLog(log);
+  }
+  function snoozePopup(meal) {
+    var log = readLog(), d = todayKey2();
+    log[d + '|' + meal] = Object.assign(log[d + '|' + meal] || {}, { snooze: Date.now() + 10 * 60000 });
+    writeLog(log);
+    toast('10 分钟后我再来叫你', '⏰');
+  }
+  function mealKey(i) { return ['breakfast', 'lunch', 'dinner'][i] || 'lunch'; }
+  function hmToMin(hm) { var p = String(hm || '0:0').split(':'); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
+
+  // 到点检查：页面开着就会在顶部弹窗 + 系统通知 + 声音震动
+  function checkMealAlert() {
+    var p = data().prefs || {};
+    if (p.enabled === false) return { popups: 0, notes: 0, reminders: 0, buzzed: false };
+    var now = new Date();
+    var d = todayKey2(now);
+    var minutes = now.getHours() * 60 + now.getMinutes();
+    var log = readLog();
+    var res = { popups: 0, notes: 0, reminders: 0, buzzed: false };
+    var times = p.times || ['07:30', '11:45', '17:45'];
+    var days = p.days || [0, 1, 2, 3, 4, 5, 6];
+
+    for (var i = 0; i < 3; i++) {
+      var key = d + '|' + mealKey(i);
+      var rec = log[key] || {};
+      var t = hmToMin(times[i]);
+      var diff = minutes - t;
+
+      // A. 准点：到点 60 分钟内、还没弹过
+      if (diff >= 0 && diff <= 60 && !rec.pop && days.indexOf(now.getDay()) >= 0) {
+        rec.pop = Date.now();
+        alarmPopup(mealKey(i), diff >= 10);
+        res.popups++;
+        // 顺手发一条系统通知，锁屏/切出去也能看到
+        if (navigator.serviceWorker && navigator.serviceWorker.ready) {
+          navigator.serviceWorker.ready.then(function (reg) {
+            try {
+              reg.showNotification('🍚 到饭点啦', {
+                body: '打开铁线饭点看看今天的提醒。',
+                tag: 'fd-meal-' + key, icon: 'icon-192.png', badge: 'badge-72.png', vibrate: [150, 70, 150]
+              });
+            } catch (e) {}
+          })['catch'](function () {});
+        }
+        res.notes++;
+        beepAndVibrate();
+        res.buzzed = true;
+        log[key] = rec;
+        writeLog(log);
+        continue;
+      }
+
+      // B. 没确认：过了 30 分钟再催一次（最多催 1 次）
+      if (rec.pop && !rec.done && !rec.remind && (Date.now() - (rec.snooze || rec.pop)) > 30 * 60000 && diff > 0) {
+        rec.remind = Date.now();
+        popup({
+          kind: 'alarm', icon: '⏰', title: pickAny(COPY.remind).title, sub: '还没确认吃饭吗', body: pickAny(COPY.remind).body,
+          maxSeconds: 90,
+          actions: [{ label: '我吃了', primary: true, fn: function () { markDone(mealKey(i)); } }, { label: '待会吃', fn: function () { snoozePopup(mealKey(i)); } }]
+        });
+        log[key] = rec;
+        writeLog(log);
+        res.reminders++;
+        beepAndVibrate();
+        res.buzzed = true;
+      }
+    }
+    return res;
+  }
+
+  // 页面重新回到前台时：如果错过了饭点（90 分钟内）补发一次
+  function catchUpAlert() {
+    var p = data().prefs || {};
+    if (p.enabled === false) return 0;
+    var now = new Date(), d = todayKey2(now), minutes = now.getHours() * 60 + now.getMinutes();
+    var log = readLog(), times = p.times || [], n = 0;
+    for (var i = 0; i < 3; i++) {
+      var diff = minutes - hmToMin(times[i]);
+      var key = d + '|' + mealKey(i);
+      if (diff >= 0 && diff <= 90 && !(log[key] && log[key].pop)) {
+        log[key] = Object.assign(log[key] || {}, { pop: Date.now(), late: true });
+        writeLog(log);
+        alarmPopup(mealKey(i), true);
+        n++;
+        break;
+      }
+    }
+    return n;
+  }
+
+  // 傍晚总结 / 第二天早上预提醒
+  function checkDailyNotes() {
+    var log = readLog(), d = todayKey2();
+    if (log['summary|' + d]) return;
+    var minutes = new Date().getHours() * 60 + new Date().getMinutes();
+    if (minutes >= 20 * 60 + 30) {
+      log['summary|' + d] = 1; writeLog(log);
+      infoPopup(pickAny(COPY.summary), '🌙');
+    }
+  }
+
+  // 提示音 + 震动（网页静音也可能没声音，震动一般可以用）
+  function beepAndVibrate() {
+    try { if (navigator.vibrate) navigator.vibrate([200, 90, 200, 90, 360]); } catch (e) {}
+    try {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      var ctx = new AC();
+      var o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = 'sine'; o.frequency.setValueAtTime(880, ctx.currentTime);
+      g.gain.setValueAtTime(0.0001, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.15, ctx.currentTime + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.5);
+      o.connect(g); g.connect(ctx.destination);
+      o.start(); o.stop(ctx.currentTime + 0.55);
+      setTimeout(function () { try { ctx.close(); } catch (e) {} }, 1200);
+    } catch (e) {}
   }
   function b64uToBytes(s) {
     var t = s.replace(/-/g, '+').replace(/_/g, '/');
@@ -465,9 +678,32 @@
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.addEventListener('message', function (ev) {
         var d = (ev && ev.data) || {};
-        if (d.type === 'meal-alert') { alarmPopup(d.meal || 'lunch', !!d.late); }
+        if (d.type === 'meal-alert') {
+          alarmPopup(d.meal || 'lunch', !!d.late, d.title ? { title: d.title, body: d.body || '' } : null);
+          beepAndVibrate();
+        }
+        if (d.type === 'meal-done') {
+          markDone(d.meal || 'lunch');
+          toast('记下了，好好吃 🍚', '🍚');
+        }
       });
     }
+
+    /* ---- 页面开着时的到点提醒：弹窗 + 系统通知 + 声音震动 ---- */
+    setTimeout(function () { try { checkMealAlert(); } catch (e) {} }, 1500);
+    setInterval(function () {
+      try { checkMealAlert(); } catch (e) {}
+      try { checkDailyNotes(); } catch (e) {}
+    }, 30000);
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState !== 'visible') return;
+      try { checkMealAlert(); } catch (e) {}
+      try { if (!catchUpAlert()) checkDailyNotes(); } catch (e) {}
+      try { readRemote().then(render); } catch (e) {}
+    });
+    window.addEventListener('focus', function () { try { checkMealAlert(); } catch (e) {} });
+    // 联网恢复时立即补查一次（断网回来也能补到）
+    window.addEventListener('online', function () { try { checkMealAlert(); catchUpAlert(); } catch (e) {} });
     on('onSwitch', 'change', function (e) { data().prefs.enabled = e.target.checked; save(e.target.checked ? '开启提醒' : '暂停提醒'); });
     on('nameSwitch', 'change', function (e) { data().prefs.nameBad = e.target.checked; save('改文案'); });
     on('windowSeg', 'click', function (e) {
@@ -498,4 +734,20 @@
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();
+
+  /* 自动化测试入口（页面里正常使用不受影响） */
+  window.__fdTest = {
+    tickForTest: function () { var r = checkMealAlert(); try { checkDailyNotes(); } catch (e) {} return r; },
+    catchUpForTest: catchUpAlert,
+    resetFired: function () { try { localStorage.removeItem(KEY_LOG); } catch (e) {} },
+    setPrefs: function (p) { state.data = data(); state.data.prefs = Object.assign(state.data.prefs || {}, p); },
+    setAckSkipForTest: function () {
+      var log = readLog(), d = todayKey2();
+      log[d + '|lunch'] = { pop: Date.now() - 40 * 60000, snooze: Date.now() - 31 * 60000 };
+      writeLog(log);
+    },
+    setNowTest: function () {},
+    pickCopyForTest: function (meal) { var c = pickCopy(meal); return c.title + ' | ' + c.body.split('\n')[1]; },
+    previewForTest: previewPopup
+  };
 })();
