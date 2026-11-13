@@ -1,5 +1,5 @@
 /* 铁线饭点 Service Worker：接收服务器推送、显示通知 */
-const CACHE = 'tie-xian-v1';
+const CACHE = 'tie-xian-v4';
 const ASSETS = ['./', './index.html', './app.js', './wire.js', './manifest.json', './icon-192.png', './badge-72.png'];
 
 self.addEventListener('install', e => {
@@ -60,7 +60,27 @@ self.addEventListener('push', e => {
       { action: 'ok', title: '我要去吃了' }
     ]
   };
-  e.waitUntil(self.registration.showNotification(title, options));
+  // 页面当前在前台时：直接把消息发给页面，由页面在最上层弹「小闹钟」窗口
+  // （页面在前台时安卓一般不会显示系统通知，交给页面弹窗更醒目）
+  const showWindow = self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
+    const visible = clients.filter(c => c.visibilityState === 'visible');
+    if (visible.length) {
+      visible.forEach(c => c.postMessage({
+        type: 'meal-alert',
+        meal: data.meal || 'lunch',
+        title,
+        body,
+        late: /饭点过了/.test(title)
+      }));
+      return true;
+    }
+    return false;
+  });
+
+  e.waitUntil(showWindow.then(visible => {
+    if (visible) return undefined;          // 前台：页面弹窗负责
+    return self.registration.showNotification(title, options); // 后台/锁屏：系统通知
+  }).catch(() => self.registration.showNotification(title, options)));
 });
 
 /* ---------- 点通知 ---------- */

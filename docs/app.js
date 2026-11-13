@@ -15,14 +15,112 @@
   function on(id, type, fn) { var e = $(id); if (e) e.addEventListener(type, fn); }
   function pad(n) { return (n < 10 ? '0' : '') + n; }
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  /* ---------------- 顶层小弹窗（类闹钟，但不全屏） ---------------- */
+  var tipTimer = null;
+  var MEALS = {
+    breakfast: { name: '早饭', ico: '🌅', text: '该吃早饭了～温热一点：粥、蒸蛋、半个包子，垫一垫就好。\n⚠️ 不碰膨化零食，别拿饼干凑合。' },
+    lunch: { name: '午饭', ico: '☀️', text: '午饭吃七八分就好：肉和菜多一点，主食别过量。\n❌ 雷区：薯片、虾条、锅巴、爆米花、辣条、方便面 —— 会涨肚，别买。\n⚠️ 汽水、糯米、豆类少吃，吃完别马上躺。' },
+    dinner: { name: '晚饭', ico: '🌙', text: '晚饭清淡一点，少油少盐，吃到舒服就放下筷子。\n🥗 睡前至少留 3 小时，吃完出去走两步。' }
+  };
+  function popLayer() {
+    var layer = $('popLayer');
+    if (layer) return layer;
+    layer = document.createElement('div');
+    layer.className = 'pop-layer';
+    layer.id = 'popLayer';
+    document.body.appendChild(layer);
+    return layer;
+  }
+  /* opts: { title, sub, body, icon, kind: 'alarm'|'info'|'tip', actions: [{label, primary, fn}], timeout } */
+  function popup(opts) {
+    var layer = popLayer();
+    var el = document.createElement('div');
+    el.className = 'pop ' + (opts.kind || 'alarm');
+    var actions = opts.actions || [];
+    el.innerHTML =
+      '<div class="pop-head">' +
+        '<div class="pop-ico">' + (opts.icon || '🍚') + '</div>' +
+        '<div class="t"><div class="pop-title"></div><div class="pop-sub"><span class="live"></span><span class="sub-text"></span><span class="pop-clock"></span></div></div>' +
+        '<button class="pop-close" aria-label="关闭">×</button>' +
+      '</div>' +
+      (opts.body ? '<div class="pop-body"></div>' : '') +
+      '<div class="pop-actions' + (actions.length > 1 ? ' two' : '') + '"></div>';
+    el.querySelector('.pop-title').textContent = opts.title || '提醒';
+    var subText = el.querySelector('.sub-text');
+    if (subText) subText.textContent = opts.sub || '';
+    var bodyEl = el.querySelector('.pop-body');
+    if (bodyEl) bodyEl.textContent = opts.body || '';
+    var clock = el.querySelector('.pop-clock');
+
+    function close() {
+      clearInterval(clockTick);
+      el.classList.remove('show');
+      el.classList.add('leaving');
+      setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 320);
+      if (opts.onClose) { try { opts.onClose(); } catch (e) {} }
+    }
+    // 醒木式：像闹钟一样显示已弹出的秒数
+    var t0 = Date.now();
+    var clockTick = setInterval(function () {
+      var s = Math.floor((Date.now() - t0) / 1000);
+      if (clock) clock.textContent = ' · 已响 ' + pad(Math.floor(s / 60)) + ':' + pad(s % 60);
+      if (opts.maxSeconds && s >= opts.maxSeconds) close();
+    }, 1000);
+    if (clock) clock.textContent = ' · 刚刚';
+    el.querySelector('.pop-close').addEventListener('click', function () { close(); if (opts.onCancel) opts.onCancel(); });
+
+    var actBox = el.querySelector('.pop-actions');
+    actions.forEach(function (a) {
+      var b = document.createElement('button');
+      b.className = 'pop-btn' + (a.primary ? ' primary' : '');
+      b.textContent = a.label;
+      b.addEventListener('click', function () { close(); if (a.fn) setTimeout(a.fn, 60); });
+      actBox.appendChild(b);
+    });
+    if (!actions.length) { var cur = el.querySelector('.pop-actions'); if (cur && cur.remove) cur.remove(); }
+
+    layer.appendChild(el);
+    void el.offsetWidth; // 触发重排，保证动画生效
+    el.classList.add('show');
+    try { if (navigator.vibrate) navigator.vibrate(opts.kind === 'alarm' ? [120, 60, 120] : 30); } catch (e) {}
+    if (opts.timeout) setTimeout(close, opts.timeout);
+    return { close: close, el: el };
+  }
+  /* 轻提示：也是顶部小条，3 秒自动收起 */
   function toast(msg, icon) {
-    var t = $('toast');
-    if (!t) { console.log('[toast]', msg); return; }
-    setText('toastIcon', icon || '🍚');
-    setText('toastText', msg);
-    t.classList.add('show');
-    clearTimeout(toast.t);
-    toast.t = setTimeout(function () { t.classList.remove('show'); }, 2600);
+    if (!msg) return null;
+    // tip 类型的弹窗不堆叠：后来的替换前面的
+    if (toast._last) { try { toast._last.remove(); } catch (e) {} toast._last = null; }
+    var p = popup({ kind: 'tip', icon: icon || '🍚', title: msg, body: msg, timeout: 3000 });
+    if (p && p.el) p.el.dataset = p.el.dataset || {};
+    if (p && p.el) p.el.dataset.toast = msg;   // 便于自动化测试 / 排查
+    toast._last = p && p.el;
+    return p;
+  }
+  /* 闹钟式提醒弹窗 */
+  function alarmPopup(mealKey, late) {
+    var m = MEALS[mealKey] || MEALS.lunch;
+    var now = new Date();
+    var hm = pad(now.getHours()) + ':' + pad(now.getMinutes());
+    return popup({
+      kind: 'alarm',
+      icon: late ? '⏰' : m.ico,
+      title: (late ? '饭点过了 · ' : '') + m.name + '时间',
+      sub: hm + ' · 该照顾一下胃了',
+      body: m.text,
+      maxSeconds: 180,
+      actions: [
+        { label: '我要去吃', primary: true, fn: function () { toast('好，去吧 🍲', '🍲'); } },
+        { label: '10 分钟后再叫我', fn: function () { toast('10 分钟后我再提醒你', '⏰'); } },
+        { label: '别提醒了', fn: function () { toast('这次跳过', '🔕'); } }
+      ]
+    });
+  }
+  function previewPopup() {
+    var now = new Date();
+    var mins = now.getHours() * 60 + now.getMinutes();
+    var key = mins < 10 * 60 + 30 ? 'breakfast' : (mins < 15 * 60 ? 'lunch' : 'dinner');
+    alarmPopup(key, false);
   }
   function b64uToBytes(s) {
     var t = s.replace(/-/g, '+').replace(/_/g, '/');
@@ -261,19 +359,13 @@
         data().subs.push(rec);
         localStorage.setItem('fd_sub', rec.id);
         render();
-        // 本机先弹一条，确认通知真的能用
-        try {
-          reg.showNotification('🔔 已开启推送', {
-            body: '这是本机测试。到饭点会像这样叫你：午饭别吃膨化、别吃涨肚。',
-            tag: 'fd-enabled', icon: 'icon-192.png', badge: 'badge-72.png', vibrate: [150, 60, 150]
-          });
-        } catch (e) {}
-        toast('本机通知已开启，正在上传到云端…', '🔔');
+        // 先把闹钟式小弹窗弹出来，确认页面提醒长这样
+        alarmPopup('lunch', false);
         if (!localStorage.getItem('fd_token')) {
           showUnlock('还差一步：粘贴一次 GitHub 令牌，把手机登记到云端。');
           return;
         }
-        return writeRemote('登记推送订阅').then(function () { toast('云端也登记好了！点「测试真推送」', '🎉'); });
+        return writeRemote('登记推送订阅').then(function () { toast('云端也登记好了，点「测试真推送」', '🎉'); });
       });
     })['catch'](function (e) {
       setText('subError', '❌ ' + (e.message || e));
@@ -286,7 +378,9 @@
     if (!sub) { toast('请先开启推送', '⚠️'); return; }
     sub.test = Date.now();
     if (!localStorage.getItem('fd_token')) { showUnlock('需要一个令牌才能把「测试」通知服务器'); return; }
-    writeRemote('测试推送').then(function () { toast('测试已排队，5 分钟内到（可锁屏等）', '🧪'); })['catch'](function () {});
+    writeRemote('测试推送')
+      .then(function () { toast('测试已排队，5 分钟内会在手机顶层弹出', '🧪'); })
+      ['catch'](function () {});
   }
 
   /* ---------------- 令牌 ---------------- */
@@ -365,6 +459,15 @@
       toast('已关闭推送', '🔕');
     });
     on('webPushTestBtn', 'click', testPush);
+    on('previewBtn', 'click', previewPopup);
+
+    // 收到服务器推送时，页面若在前台，也在最上层弹同款小弹窗
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', function (ev) {
+        var d = (ev && ev.data) || {};
+        if (d.type === 'meal-alert') { alarmPopup(d.meal || 'lunch', !!d.late); }
+      });
+    }
     on('onSwitch', 'change', function (e) { data().prefs.enabled = e.target.checked; save(e.target.checked ? '开启提醒' : '暂停提醒'); });
     on('nameSwitch', 'change', function (e) { data().prefs.nameBad = e.target.checked; save('改文案'); });
     on('windowSeg', 'click', function (e) {
